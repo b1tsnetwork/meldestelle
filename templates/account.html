@@ -1,0 +1,35 @@
+{{define "content"}}{{with $.User}}
+<div class="sheet-wrap">
+<header class="sheet-head">
+  <h1>Mein Konto</h1>
+  <p class="lede">Angemeldet als <strong>{{.Username}}</strong>, {{if .IsOIDC}}über Single Sign-On{{else}}mit lokalem Konto{{end}}{{if .IsAdmin}}, Administrator{{end}}. <a href="/?meine=1">Meine Meldungen ansehen</a></p>
+</header>
+
+<form class="sheet" method="post" action="/konto">
+  <h2>Profil</h2>
+  <input type="hidden" name="csrf" value="{{$.CSRF}}">
+  <input type="hidden" name="aktion" value="profil">
+  <div class="field-row">
+    <div class="field"><label for="a-name">Anzeigename</label><input id="a-name" name="anzeigename" value="{{.DisplayName}}" maxlength="60" placeholder="{{.Username}}"></div>
+    <div class="field"><label for="a-mail">E-Mail</label><input id="a-mail" type="email" name="email" value="{{.Email}}" {{if .IsOIDC}}readonly aria-describedby="h-mail"{{end}}>
+      {{if .IsOIDC}}<p class="field-help" id="h-mail">Wird vom Identity Provider gepflegt.</p>{{end}}</div>
+  </div>
+  <div class="sheet-actions"><button class="btn btn-primary">Profil speichern</button></div>
+</form>
+
+{{if .HasPassword}}
+<form class="sheet" method="post" action="/konto">
+  <h2>Passwort ändern</h2>
+  <input type="hidden" name="csrf" value="{{$.CSRF}}">
+  <input type="hidden" name="aktion" value="passwort">
+  <div class="field"><label for="a-old">Aktuelles Passwort</label><input id="a-old" type="password" name="alt" autocomplete="current-password" required></div>
+  <div class="field-row">
+    <div class="field"><label for="a-new">Neues Passwort</label><input id="a-new" type="password" name="neu" minlength="10" maxlength="72" autocomplete="new-password" required></div>
+    <div class="field"><label for="a-new2">Wiederholen</label><input id="a-new2" type="password" name="neu2" minlength="10" maxlength="72" autocomplete="new-password" required></div>
+  </div>
+  <p class="field-help">Andere angemeldete Geräte werden dabei abgemeldet.</p>
+  <div class="sheet-actions"><button class="btn btn-primary">Passwort ändern</button></div>
+</form>
+{{end}}
+</div>
+{{end}}{{end}}

@@ -1,0 +1,53 @@
+{{define "layout"}}<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="csrf-token" content="{{.CSRF}}">
+<meta name="color-scheme" content="light dark">
+<title>{{if .Title}}{{.Title}} – {{end}}{{.AppName}}</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="preload" href="/static/fonts/barlow-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/static/fonts/barlow-condensed-latin-700-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#inhalt">Zum Inhalt springen</a>
+<header class="masthead">
+  <div class="masthead-inner">
+    <a class="brand" href="/">
+      <svg class="brand-mark" viewBox="0 0 32 32" width="28" height="28" aria-hidden="true"><path d="M16 3 3 27h26z" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/><path d="M16 12v7" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><circle cx="16" cy="23" r="1.8" fill="currentColor"/></svg>
+      <span>{{.AppName}}</span>
+    </a>
+    <nav class="mast-nav" aria-label="Hauptnavigation">
+      {{if .User}}
+        {{if .IsDeveloper}}<a class="mast-link mast-sec" href="/?art=security">Sicherheitsmeldungen</a>{{end}}
+        {{if .User.IsAdmin}}<a class="mast-link" href="/admin">Verwaltung</a>{{end}}
+        <a class="mast-link" href="/konto">{{.User.Name}}</a>
+        <form method="post" action="/logout" class="inline">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <button class="mast-link">Abmelden</button>
+        </form>
+        <a class="btn btn-signal" href="/neu">Neue Meldung</a>
+      {{else}}
+        <a class="mast-link" href="/login">Anmelden</a>
+        {{if .Registration}}<a class="btn btn-signal" href="/registrieren">Konto anlegen</a>{{end}}
+      {{end}}
+    </nav>
+  </div>
+</header>
+<main id="inhalt" class="page">
+  {{with .Flash}}<div class="notice notice-{{.Kind}}" role="status">{{.Msg}}</div>{{end}}
+  {{template "content" .}}
+</main>
+<footer class="colophon">
+  <p>Sicherheitslücken und Exploits sehen nur die Entwickler der jeweiligen Software.</p>
+</footer>
+</body>
+</html>{{end}}
+
+{{define "arrow"}}<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 5 4 15h16z" fill="currentColor"/></svg>{{end}}
+{{define "lock"}}<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M7 10V7a5 5 0 0 1 10 0v3h1a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1zm2 0h6V7a3 3 0 0 0-6 0z" fill="currentColor"/></svg>{{end}}
+{{define "file"}}<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zm0 2.5L17.5 8H14zM6 20V4h6v6h6v10z" fill="currentColor"/></svg>{{end}}
+{{define "status"}}<span class="status st-{{.}}"><i aria-hidden="true"></i>{{statusLabel .}}</span>{{end}}

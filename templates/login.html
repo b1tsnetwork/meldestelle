@@ -1,0 +1,21 @@
+{{define "content"}}{{with .Data}}
+<div class="gate">
+  <h1>Anmelden</h1>
+  <p class="lede">Melden, antworten und abstimmen geht nur mit Konto.</p>
+  {{if .Error}}<div class="notice notice-error" role="alert">{{.Error}}</div>{{end}}
+  {{if $.OIDC}}
+    <a class="btn btn-primary btn-block" href="/auth/oidc/login?next={{.Next}}">{{$.OIDCLabel}}</a>
+    {{if $.LocalLogin}}<p class="or">oder mit Benutzername</p>{{end}}
+  {{end}}
+  {{if $.LocalLogin}}
+  <form method="post" action="/login" class="stack">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <input type="hidden" name="next" value="{{.Next}}">
+    <div class="field"><label for="l-user">Benutzername</label><input id="l-user" name="benutzer" value="{{.Username}}" autocomplete="username" required autofocus></div>
+    <div class="field"><label for="l-pw">Passwort</label><input id="l-pw" type="password" name="passwort" autocomplete="current-password" required></div>
+    <button class="btn {{if not $.OIDC}}btn-primary {{end}}btn-block">Anmelden</button>
+  </form>
+  {{if $.Registration}}<p class="gate-foot">Noch kein Konto? <a href="/registrieren?next={{.Next}}">Konto anlegen</a></p>{{end}}
+  {{end}}
+</div>
+{{end}}{{end}}

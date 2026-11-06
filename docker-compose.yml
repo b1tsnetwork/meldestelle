@@ -1,0 +1,14 @@
+services:
+  meldestelle:
+    build: .
+    image: ghcr.io/b1tk1ll3r/meldestelle:latest
+    container_name: meldestelle
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:8080:8080"   # hinter Caddy; direkt erreichbar: "8080:8080"
+    volumes:
+      - meldestelle-data:/data
+
+volumes:
+  meldestelle-data:

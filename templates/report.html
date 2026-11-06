@@ -1,0 +1,150 @@
+{{define "content"}}{{with .Data}}{{$r := .Report}}
+<nav class="crumbs" aria-label="Pfad"><a href="/">Meldungen</a><span aria-hidden="true">/</span><a href="/s/{{$r.SoftwareSlug}}">{{$r.SoftwareName}}</a><span aria-hidden="true">/</span><span>#{{$r.ID}}</span></nav>
+
+{{if $r.Confidential}}
+<div class="hazard" role="note">
+  {{template "lock"}}
+  <p><strong>Vertrauliche Meldung.</strong> Sichtbar nur für {{$r.AuthorName}}, die Entwickler von {{$r.SoftwareName}} und Administratoren. Anhänge sind ebenso geschützt.</p>
+</div>
+{{end}}
+
+<div class="dossier k-{{$r.Kind}}{{if $r.Confidential}} is-conf{{end}}">
+  <article class="dossier-main">
+    <header class="dossier-head">
+      <div class="ticket-tags">
+        <span class="kind">{{kindLabel $r.Kind}}</span>
+        {{template "status" $r.Status}}
+      </div>
+      <h1>{{$r.Title}}</h1>
+      <p class="byline">Gemeldet von <strong>{{$r.AuthorName}}</strong> am <time datetime="{{iso $r.CreatedAt}}">{{date $r.CreatedAt}}</time></p>
+    </header>
+
+    <div class="prose">{{$r.Body}}</div>
+    {{template "attachments" .Attachments}}
+
+    {{if .Events}}
+    <details class="audit">
+      <summary>
+        <span class="audit-title">Änderungsverlauf</span>
+        <span class="hint">{{len .Events}} {{plural (len .Events) "Eintrag" "Einträge"}}, zuletzt {{with index .Events (sub (len .Events) 1)}}{{ago .CreatedAt}}{{end}}</span>
+      </summary>
+      <ol class="audit-list">
+        {{range .Events}}
+        <li id="k{{.ID}}">
+          <span class="audit-text">{{.Body}}</span>
+          <span class="audit-meta">{{.AuthorName}}, <time datetime="{{iso .CreatedAt}}" title="{{date .CreatedAt}}">{{ago .CreatedAt}}</time></span>
+        </li>
+        {{end}}
+      </ol>
+    </details>
+    {{end}}
+
+    <section class="timeline" aria-labelledby="antworten">
+      <h2 id="antworten">Unterhaltung{{if .Replies}} <span class="count">{{len .Replies}}</span>{{end}}</h2>
+      {{if .Replies}}
+      <ol>
+      {{range .Replies}}
+        <li class="reply{{if .AuthorIsDev}} by-dev{{end}}" id="k{{.ID}}">
+          <p class="reply-meta">
+            <strong>{{.AuthorName}}</strong>
+            {{if .AuthorIsDev}}<span class="role role-dev">Entwickler</span>{{else if eq .AuthorID $r.AuthorID}}<span class="role">Meldende Person</span>{{end}}
+            <time datetime="{{iso .CreatedAt}}" title="{{date .CreatedAt}}">{{ago .CreatedAt}}</time>
+          </p>
+          {{if .Body}}<div class="prose">{{.Body}}</div>{{end}}
+          {{template "attachments" .Attachments}}
+        </li>
+      {{end}}
+      </ol>
+      {{else}}
+      <p class="hint timeline-empty">Noch keine Antworten von Entwicklern oder Nutzern.</p>
+      {{end}}
+
+    {{if $.User}}
+      <form class="reply-form" method="post" action="/r/{{$r.ID}}/kommentar" enctype="multipart/form-data">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <label for="text">Antworten</label>
+        <textarea id="text" name="text" rows="5" maxlength="20000" placeholder="Weitere Details, Schritte zur Reproduktion oder Logs"></textarea>
+        <div class="reply-actions">
+          <label class="filepick">
+            <input type="file" name="anhaenge" multiple data-filelist="cfiles" data-max="{{.MaxFiles}}" data-max-bytes="{{.MaxBytes}}">
+            <span>Dateien anhängen</span>
+          </label>
+          <span class="hint">bis {{.MaxFiles}} Dateien, je {{bytes .MaxBytes}}</span>
+          <button class="btn btn-primary">Antwort senden</button>
+        </div>
+        <ul id="cfiles" class="filelist"></ul>
+      </form>
+      {{else}}
+      <p class="signin-hint"><a href="/login?next=/r/{{$r.ID}}">Melde dich an</a>, um zu antworten oder die Meldung zu unterstützen.</p>
+      {{end}}
+    </section>
+  </article>
+
+  <aside class="facts" aria-label="Eckdaten">
+    <div class="facts-tally">
+      {{if $r.Confidential}}
+        <span class="tally-lock">{{template "lock"}}</span>
+        <p class="hint">Vertrauliche Meldungen werden nicht abgestimmt.</p>
+      {{else if $.User}}
+        <form method="post" action="/r/{{$r.ID}}/vote" data-vote class="big-vote">
+          <input type="hidden" name="csrf" value="{{$.CSRF}}">
+          <button class="up{{if $r.Voted}} is-on{{end}}" aria-pressed="{{$r.Voted}}">{{template "arrow"}}<span>{{if $r.Voted}}Unterstützt{{else}}Unterstützen{{end}}</span></button>
+          <p><span class="n">{{$r.Score}}</span> {{plural $r.Score "Stimme" "Stimmen"}}</p>
+        </form>
+      {{else}}
+        <div class="big-vote">
+          <a class="up" href="/login?next=/r/{{$r.ID}}">{{template "arrow"}}<span>Unterstützen</span></a>
+          <p><span class="n">{{$r.Score}}</span> {{plural $r.Score "Stimme" "Stimmen"}}</p>
+        </div>
+      {{end}}
+    </div>
+
+    <dl class="facts-list">
+      <dt>Software</dt><dd><a href="/s/{{$r.SoftwareSlug}}">{{$r.SoftwareName}}</a></dd>
+      <dt>Art</dt><dd>{{kindLabel $r.Kind}}</dd>
+      <dt>Status</dt><dd>{{template "status" $r.Status}}</dd>
+      {{if $r.Version}}<dt>Version</dt><dd>{{$r.Version}}</dd>{{end}}
+      <dt>Nummer</dt><dd>#{{$r.ID}}</dd>
+      <dt>Aktualisiert</dt><dd><time datetime="{{iso $r.UpdatedAt}}" title="{{date $r.UpdatedAt}}">{{ago $r.UpdatedAt}}</time></dd>
+      {{if .Developers}}<dt>Entwickler</dt><dd>{{range $i, $d := .Developers}}{{if $i}}, {{end}}{{$d.Name}}{{end}}</dd>{{end}}
+    </dl>
+
+    {{if .CanManage}}
+    <form class="triage" method="post" action="/r/{{$r.ID}}/verwalten">
+      <h2>Bearbeiten</h2>
+      <input type="hidden" name="csrf" value="{{$.CSRF}}">
+      <label>Status
+        <select name="status">{{range .Statuses}}<option value="{{.Value}}"{{if eq .Value $r.Status}} selected{{end}}>{{.Label}}</option>{{end}}</select>
+      </label>
+      <label>Art
+        <select name="art">{{range .Kinds}}<option value="{{.Value}}"{{if eq .Value $r.Kind}} selected{{end}}>{{.Label}}</option>{{end}}</select>
+      </label>
+      <label class="toggle"><input type="checkbox" name="vertraulich" value="1"{{if $r.Confidential}} checked{{end}}><span>Nur für Entwickler sichtbar</span></label>
+      <p class="hint">Wird eine Meldung zu Sicherheit umgestuft, ist sie automatisch vertraulich. Nach dem Fix kannst du sie hier freigeben.</p>
+      <button class="btn btn-primary">Änderungen speichern</button>
+    </form>
+    <form method="post" action="/r/{{$r.ID}}/loeschen" data-confirm="Meldung #{{$r.ID}} mit allen Antworten und Anhängen endgültig löschen?" class="delete-form">
+      <input type="hidden" name="csrf" value="{{$.CSRF}}">
+      <button class="btn-text danger">Meldung löschen</button>
+    </form>
+    {{end}}
+  </aside>
+</div>
+{{end}}{{end}}
+
+{{define "attachments"}}{{if .}}
+<ul class="files">
+  {{range .}}
+    {{if isImage .ContentType}}
+    <li class="file file-img"><a href="/anhang/{{.ID}}/{{pathesc .Filename}}" target="_blank" rel="noopener">
+      <img src="/anhang/{{.ID}}/{{pathesc .Filename}}" alt="{{.Filename}}" loading="lazy">
+      <span class="file-name">{{.Filename}}</span>
+    </a></li>
+    {{else}}
+    <li class="file"><a href="/anhang/{{.ID}}/{{pathesc .Filename}}" download>
+      {{template "file"}}<span class="file-name">{{.Filename}}</span><span class="file-size">{{bytes .Size}}</span>
+    </a></li>
+    {{end}}
+  {{end}}
+</ul>
+{{end}}{{end}}

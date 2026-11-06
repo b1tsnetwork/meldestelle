@@ -1,0 +1,7 @@
+{{define "content"}}{{with .Data}}
+<div class="empty empty-error">
+  <p class="err-code">{{index . "Status"}}</p>
+  <h1>{{index . "Message"}}</h1>
+  <p><a class="btn" href="/">Zu den Meldungen</a></p>
+</div>
+{{end}}{{end}}

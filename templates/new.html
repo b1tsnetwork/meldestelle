@@ -1,0 +1,86 @@
+{{define "content"}}{{with .Data}}
+<div class="sheet-wrap">
+<header class="sheet-head">
+  <h1>Neue Meldung</h1>
+  <p class="lede">Je genauer die Beschreibung, desto schneller kann ein Entwickler helfen.</p>
+</header>
+
+{{if .Errors}}<div class="notice notice-error" role="alert"><p>Bitte prüfe deine Angaben:</p><ul>{{range .Errors}}<li>{{.}}</li>{{end}}</ul></div>{{end}}
+
+{{if not .Softwares}}
+<div class="empty">
+  <h2>Noch keine Software eingetragen</h2>
+  <p>{{if $.User.IsAdmin}}<a href="/admin">Lege in der Verwaltung die erste Software an</a>, dann kann gemeldet werden.{{else}}Ein Administrator muss zuerst eine Software anlegen.{{end}}</p>
+</div>
+{{else}}
+<form class="sheet" method="post" action="/neu" enctype="multipart/form-data">
+  <input type="hidden" name="csrf" value="{{$.CSRF}}">
+
+  <fieldset class="kinds">
+    <legend>Worum geht es?</legend>
+    <label class="kind-opt k-bug"><input type="radio" name="art" value="bug"{{if eq (index .Values "art") "bug"}} checked{{end}}>
+      <span class="kind-name">Bug</span><span class="kind-desc">Etwas funktioniert nicht wie erwartet.</span></label>
+    <label class="kind-opt k-feature"><input type="radio" name="art" value="feature"{{if eq (index .Values "art") "feature"}} checked{{end}}>
+      <span class="kind-name">Feature</span><span class="kind-desc">Eine Idee oder ein Wunsch für eine Verbesserung.</span></label>
+    <label class="kind-opt k-security"><input type="radio" name="art" value="security"{{if eq (index .Values "art") "security"}} checked{{end}}>
+      <span class="kind-name">Sicherheitslücke oder Exploit</span><span class="kind-desc">Wird vertraulich behandelt.</span></label>
+  </fieldset>
+
+  <div id="security-note" class="hazard" hidden>
+    {{template "lock"}}
+    <p>Diese Meldung und ihre Anhänge sehen nur du, die Entwickler der gewählten Software und Administratoren. Sie erscheint in keiner öffentlichen Liste und kann nicht abgestimmt werden.</p>
+  </div>
+
+  <div class="field-row">
+    <div class="field">
+      <label for="f-software">Software</label>
+      <select id="f-software" name="software" required>
+        <option value="">Bitte wählen</option>
+        {{range .Softwares}}<option value="{{.ID}}"{{if eq (printf "%d" .ID) (index $.Data.Values "software")}} selected{{end}}>{{.Name}}</option>{{end}}
+      </select>
+    </div>
+    <div class="field">
+      <label for="f-version">Version</label>
+      <input id="f-version" name="version" maxlength="60" value="{{index .Values "version"}}" placeholder="z. B. 2.4.1" aria-describedby="h-version">
+      <p class="field-help" id="h-version">Optional, falls bekannt.</p>
+    </div>
+  </div>
+
+  <div class="field">
+    <label for="f-titel">Titel</label>
+    <input id="f-titel" name="titel" required minlength="5" maxlength="200" value="{{index .Values "titel"}}" placeholder="Was passiert, in einem Satz" autocomplete="off" aria-describedby="dupes-head">
+  </div>
+
+  <section id="dupes" class="dupes" hidden aria-live="polite">
+    <div class="dupes-head" id="dupes-head">
+      <h2>Wurde das schon gemeldet?</h2>
+      <p>Wenn eine dieser Meldungen dein Anliegen beschreibt, unterstütze sie lieber, statt eine neue zu öffnen. Zusätzliche Details kannst du dort als Antwort ergänzen.</p>
+    </div>
+    <ul class="dupes-list"></ul>
+    <p class="dupes-thanks" hidden>Danke für deine Unterstützung! Wenn das dein Anliegen war, musst du keine neue Meldung abschicken. <a href="/">Zurück zur Übersicht</a></p>
+  </section>
+
+  <div class="field">
+    <label for="f-text">Beschreibung</label>
+    <textarea id="f-text" name="beschreibung" rows="12" required minlength="10" maxlength="50000" aria-describedby="h-text">{{index .Values "beschreibung"}}</textarea>
+    <p class="field-help" id="h-text">Was hast du getan, was ist passiert, was hättest du erwartet? Umgebung und Logs helfen.</p>
+  </div>
+
+  <div class="field">
+    <span class="label">Anhänge</span>
+    <label class="filepick filepick-wide">
+      <input type="file" name="anhaenge" multiple data-filelist="files" data-max="{{.MaxFiles}}" data-max-bytes="{{.MaxBytes}}">
+      <span>Dateien auswählen</span>
+    </label>
+    <p class="field-help">Screenshots, Logs oder ein Proof of Concept. Bis {{.MaxFiles}} Dateien, je {{bytes .MaxBytes}}.</p>
+    <ul id="files" class="filelist"></ul>
+  </div>
+
+  <div class="sheet-actions">
+    <a class="btn-text" href="/">Abbrechen</a>
+    <button class="btn btn-primary">Meldung absenden</button>
+  </div>
+</form>
+{{end}}
+</div>
+{{end}}{{end}}

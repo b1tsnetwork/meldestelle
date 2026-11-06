@@ -1,0 +1,26 @@
+{{define "content"}}{{with .Data}}
+<div class="gate">
+  <h1>Konto anlegen</h1>
+  <p class="lede">Dein Benutzername erscheint bei deinen Meldungen und Antworten.</p>
+  {{if .Error}}<div class="notice notice-error" role="alert">{{.Error}}</div>{{end}}
+  <form method="post" action="/registrieren" class="stack">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <input type="hidden" name="next" value="{{.Next}}">
+    <div class="field">
+      <label for="r-user">Benutzername</label>
+      <input id="r-user" name="benutzer" value="{{.Username}}" pattern="[A-Za-z0-9._\-]{3,32}" autocomplete="username" required autofocus aria-describedby="h-user">
+      <p class="field-help" id="h-user">3 bis 32 Zeichen: Buchstaben, Ziffern, Punkt, Unter- und Bindestrich.</p>
+    </div>
+    <div class="field">
+      <label for="r-mail">E-Mail</label>
+      <input id="r-mail" type="email" name="email" value="{{.Email}}" autocomplete="email" aria-describedby="h-mail">
+      <p class="field-help" id="h-mail">Optional.</p>
+    </div>
+    <div class="field"><label for="r-pw">Passwort</label><input id="r-pw" type="password" name="passwort" minlength="10" maxlength="72" autocomplete="new-password" required aria-describedby="h-pw"><p class="field-help" id="h-pw">Mindestens 10 Zeichen.</p></div>
+    <div class="field"><label for="r-pw2">Passwort wiederholen</label><input id="r-pw2" type="password" name="passwort2" minlength="10" maxlength="72" autocomplete="new-password" required></div>
+    <button class="btn btn-primary btn-block">Konto anlegen</button>
+  </form>
+  {{if $.OIDC}}<p class="or">oder</p><a class="btn btn-block" href="/auth/oidc/login?next={{.Next}}">{{$.OIDCLabel}}</a>{{end}}
+  <p class="gate-foot">Schon registriert? <a href="/login?next={{.Next}}">Anmelden</a></p>
+</div>
+{{end}}{{end}}

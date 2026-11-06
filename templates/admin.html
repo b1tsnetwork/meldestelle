@@ -1,0 +1,85 @@
+{{define "content"}}{{with .Data}}
+<header class="sheet-head">
+  <h1>Verwaltung</h1>
+  <p class="lede">Software eintragen, Entwickler zuordnen und Benutzerrechte pflegen. Entwickler sehen die Sicherheitsmeldungen ihrer Software.</p>
+  <p class="hint">Version {{$.Version}}</p>
+</header>
+
+<section class="admin-block" aria-labelledby="h-sw">
+  <h2 id="h-sw">Software</h2>
+  <form class="sheet sheet-tight add-sw" method="post" action="/admin/software">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <div class="field"><label for="n-name">Name</label><input id="n-name" name="name" required maxlength="80" placeholder="z. B. SessionGuard"></div>
+    <div class="field"><label for="n-slug">Adresse</label><input id="n-slug" name="slug" maxlength="48" placeholder="automatisch" aria-describedby="h-slug"><p class="field-help" id="h-slug">Teil der URL, z. B. /s/sessionguard</p></div>
+    <div class="field grow"><label for="n-desc">Beschreibung</label><input id="n-desc" name="beschreibung" maxlength="2000"></div>
+    <button class="btn btn-primary">Software anlegen</button>
+  </form>
+
+  {{range .Softwares}}
+  {{$sid := .ID}}
+  <div class="sw-entry" id="sw{{.ID}}">
+    <form class="sw-edit" method="post" action="/admin/software/{{.ID}}">
+      <input type="hidden" name="csrf" value="{{$.CSRF}}">
+      <div class="field"><label for="e-name-{{.ID}}">Name</label><input id="e-name-{{.ID}}" name="name" value="{{.Name}}" required maxlength="80"></div>
+      <div class="field grow"><label for="e-desc-{{.ID}}">Beschreibung</label><input id="e-desc-{{.ID}}" name="beschreibung" value="{{.Description}}" maxlength="2000"></div>
+      <button class="btn">Speichern</button>
+      <a class="btn-text" href="/s/{{.Slug}}">Meldungen ansehen</a>
+    </form>
+    <div class="dev-row">
+      <span class="dev-label">Entwickler</span>
+      <ul class="chips">
+        {{range .Developers}}
+        <li><form method="post" action="/admin/software/{{$sid}}/entwickler/{{.ID}}/entfernen" data-confirm="{{.Name}} als Entwickler entfernen?">
+          <input type="hidden" name="csrf" value="{{$.CSRF}}">
+          <span>{{.Name}}</span><button aria-label="{{.Name}} entfernen">×</button>
+        </form></li>
+        {{else}}<li class="hint">Keine. Sicherheitsmeldungen sehen derzeit nur Administratoren.</li>{{end}}
+      </ul>
+      <form class="add-dev" method="post" action="/admin/software/{{.ID}}/entwickler">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <input name="benutzer" list="userlist" placeholder="Benutzername" required aria-label="Entwickler hinzufügen">
+        <button class="btn">Hinzufügen</button>
+      </form>
+    </div>
+  </div>
+  {{else}}
+  <p class="hint">Noch keine Software angelegt.</p>
+  {{end}}
+</section>
+
+<section class="admin-block" id="benutzer" aria-labelledby="h-users">
+  <div class="admin-block-head">
+    <h2 id="h-users">Benutzer</h2>
+    <form class="search" method="get" action="/admin#benutzer" role="search">
+      <input type="search" name="q" value="{{.Query}}" placeholder="Name oder E-Mail" aria-label="Benutzer suchen">
+      <button class="btn">Suchen</button>
+    </form>
+  </div>
+  <div class="table-wrap">
+  <table class="table">
+    <thead><tr><th scope="col">Benutzer</th><th scope="col">E-Mail</th><th scope="col">Anmeldung</th><th scope="col">Rolle</th><th scope="col">Dabei seit</th><th scope="col"><span class="sr">Aktionen</span></th></tr></thead>
+    <tbody>
+    {{range .Users}}
+      <tr{{if .Disabled}} class="is-disabled"{{end}}>
+        <td><strong>{{.Username}}</strong>{{if .DisplayName}}<span class="sub">{{.DisplayName}}</span>{{end}}</td>
+        <td>{{.Email}}</td>
+        <td>{{if .IsOIDC}}Single Sign-On{{else}}Lokal{{end}}</td>
+        <td>{{if .IsAdmin}}<span class="role role-dev">Administrator</span>{{end}}{{if .Disabled}}<span class="role role-off">Gesperrt</span>{{end}}</td>
+        <td>{{date .CreatedAt}}</td>
+        <td class="actions">
+          <form method="post" action="/admin/benutzer/{{.ID}}" class="inline">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            {{if .IsAdmin}}<button class="btn-text" name="aktion" value="admin_aus">Adminrechte entziehen</button>
+            {{else}}<button class="btn-text" name="aktion" value="admin_an">Zum Administrator machen</button>{{end}}
+            {{if .Disabled}}<button class="btn-text" name="aktion" value="entsperren">Entsperren</button>
+            {{else}}<button class="btn-text danger" name="aktion" value="sperren">Sperren</button>{{end}}
+          </form>
+        </td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  <datalist id="userlist">{{range .Users}}<option value="{{.Username}}">{{end}}</datalist>
+</section>
+{{end}}{{end}}

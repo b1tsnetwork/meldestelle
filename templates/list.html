@@ -1,0 +1,109 @@
+{{define "content"}}{{with .Data}}
+<div class="board">
+  <nav class="rail" aria-label="Software">
+    <h2 class="rail-title">Software</h2>
+    <ul>
+      <li><a href="/" {{if eq .SoftwareID 0}}aria-current="page"{{end}}>Alle Programme</a></li>
+      {{range .Softwares}}<li><a href="/s/{{.Slug}}" {{if eq .ID $.Data.SoftwareID}}aria-current="page"{{end}}>{{.Name}}</a></li>{{end}}
+    </ul>
+    {{if not .Softwares}}<p class="hint">Noch keine Software eingetragen.</p>{{end}}
+  </nav>
+
+  <section class="board-main">
+    <header class="board-head">
+      <div>
+        <h1>{{if .Software}}{{.Software.Name}}{{else}}Alle Meldungen{{end}}</h1>
+        {{if .Software}}
+          {{if .Software.Description}}<p class="lede">{{.Software.Description}}</p>{{end}}
+          {{if .Developers}}<p class="hint">Betreut von {{join .Developers ", "}}</p>{{end}}
+        {{end}}
+      </div>
+      {{if and $.User .Software}}<a class="btn btn-primary" href="/neu?software={{.Software.Slug}}">{{.Software.Name}} melden</a>{{end}}
+    </header>
+
+    <div class="controls">
+      <nav class="segmented" aria-label="Art">
+        {{range .KindLinks}}<a href="{{.URL}}" class="seg seg-{{.Label}}" {{if .Active}}aria-current="true"{{end}}>{{.Label}}</a>{{end}}
+      </nav>
+      <form class="search" method="get" action="{{.BasePath}}" role="search">
+        {{if .Filter.Kind}}<input type="hidden" name="art" value="{{.Filter.Kind}}">{{end}}
+        {{if ne .Filter.Sort "hot"}}<input type="hidden" name="sort" value="{{.Filter.Sort}}">{{end}}
+        <input type="search" name="q" value="{{.Filter.Query}}" placeholder="Meldungen durchsuchen" aria-label="Suchbegriff">
+        <select name="status" data-autosubmit aria-label="Status">
+          <option value="">Jeder Status</option>
+          {{range .Statuses}}<option value="{{.Value}}"{{if eq .Value $.Data.Filter.Status}} selected{{end}}>{{.Label}}</option>{{end}}
+        </select>
+        {{if $.User}}<label class="toggle"><input type="checkbox" name="meine" value="1"{{if .Filter.Mine}} checked{{end}} data-autosubmit><span>Nur meine</span></label>{{end}}
+        <button class="btn">Suchen</button>
+      </form>
+    </div>
+
+    <div class="register-head">
+      <span class="hint">{{if .Reports}}{{len .Reports}}{{if .NextURL}}+{{end}} {{plural (len .Reports) "Meldung" "Meldungen"}}{{end}}</span>
+      <nav class="sort" aria-label="Sortierung">
+        {{range .SortLinks}}<a href="{{.URL}}" {{if .Active}}aria-current="true"{{end}}>{{.Label}}</a>{{end}}
+      </nav>
+    </div>
+
+    {{if .Reports}}
+    <ol class="register">
+      {{range .Reports}}
+      {{if .FirstDone}}<li class="done-divider" role="presentation"><span>Erledigt</span><span class="hint">Behoben, Duplikat, nicht umgesetzt oder geschlossen</span></li>{{end}}
+      <li class="ticket k-{{.Kind}}{{if .Confidential}} is-conf{{end}}{{if .Done}} is-done{{end}}">
+        <div class="tally">
+          {{if .Confidential}}
+            <span class="tally-lock" title="Vertraulich, keine Abstimmung">{{template "lock"}}</span>
+          {{else if $.User}}
+            <form method="post" action="/r/{{.ID}}/vote" data-vote>
+              <input type="hidden" name="csrf" value="{{$.CSRF}}">
+              <input type="hidden" name="zurueck" value="{{$.Data.Self}}">
+              <button class="up{{if .Voted}} is-on{{end}}" aria-pressed="{{.Voted}}" aria-label="Unterstützen">{{template "arrow"}}</button>
+              <span class="n">{{.Score}}</span>
+            </form>
+          {{else}}
+            <a class="up" href="/login?next={{$.Data.Self}}" aria-label="Zum Unterstützen anmelden">{{template "arrow"}}</a>
+            <span class="n">{{.Score}}</span>
+          {{end}}
+        </div>
+        <div class="ticket-body">
+          <div class="ticket-tags">
+            <span class="kind">{{kindLabel .Kind}}</span>
+            {{template "status" .Status}}
+            {{if .Confidential}}<span class="conf-tag">{{template "lock"}}Vertraulich</span>{{end}}
+            {{if eq $.Data.SoftwareID 0}}<a class="sw" href="/s/{{.SoftwareSlug}}">{{.SoftwareName}}</a>{{end}}
+          </div>
+          <h3 class="ticket-title"><a href="/r/{{.ID}}">{{.Title}}</a></h3>
+          {{if not .Done}}<p class="ticket-excerpt">{{excerpt .Body 180}}</p>{{end}}
+          <p class="ticket-foot">
+            <span class="ref">#{{.ID}}</span>
+            <span>{{.AuthorName}}</span>
+            <time datetime="{{iso .CreatedAt}}" title="{{date .CreatedAt}}">{{ago .CreatedAt}}</time>
+            {{if .Comments}}<span>{{.Comments}} {{plural .Comments "Antwort" "Antworten"}}</span>{{end}}
+            {{if .Version}}<span>Version {{.Version}}</span>{{end}}
+          </p>
+        </div>
+      </li>
+      {{end}}
+    </ol>
+    {{if or .PrevURL .NextURL}}
+    <nav class="pager" aria-label="Seiten">
+      {{if .PrevURL}}<a class="btn" href="{{.PrevURL}}">Vorherige Seite</a>{{else}}<span></span>{{end}}
+      <span class="hint">Seite {{.Page}}</span>
+      {{if .NextURL}}<a class="btn" href="{{.NextURL}}">Nächste Seite</a>{{else}}<span></span>{{end}}
+    </nav>
+    {{end}}
+    {{else}}
+    <div class="empty">
+      {{if or .Filter.Query .Filter.Status .Filter.Kind .Filter.Mine}}
+        <h2>Keine Treffer</h2>
+        <p>Für diese Filter gibt es keine Meldungen. <a href="{{.BasePath}}">Filter zurücksetzen</a></p>
+      {{else}}
+        <h2>Hier ist es noch ruhig</h2>
+        <p>Für {{if .Software}}{{.Software.Name}}{{else}}keine Software{{end}} wurde bisher nichts gemeldet.</p>
+        {{if $.User}}<a class="btn btn-primary" href="/neu{{if .Software}}?software={{.Software.Slug}}{{end}}">Ersten Fehler oder Wunsch melden</a>{{end}}
+      {{end}}
+    </div>
+    {{end}}
+  </section>
+</div>
+{{end}}{{end}}
