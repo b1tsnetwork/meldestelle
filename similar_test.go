@@ -47,7 +47,7 @@ func TestDuplikatsfinder(t *testing.T) {
 		{1, "die und das", 0},                 // nur Stoppwörter
 	}
 	for _, c := range cases {
-		hits, err := app.findSimilar(nil, c.sw, c.query, 5)
+		hits, err := app.findSimilar(nil, c.sw, c.query, 5, 0)
 		if err != nil {
 			t.Fatal(err)
 		}

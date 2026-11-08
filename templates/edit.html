@@ -1,0 +1,47 @@
+{{define "content"}}{{with .Data}}{{$r := .Report}}
+<div class="sheet-wrap">
+<nav class="crumbs" aria-label="Pfad"><a href="/s/{{$r.SoftwareSlug}}">{{$r.SoftwareName}}</a><span aria-hidden="true">/</span><a href="/r/{{$r.ID}}">#{{$r.ID}}</a><span aria-hidden="true">/</span><span>Bearbeiten</span></nav>
+<header class="sheet-head">
+  <h1>Meldung bearbeiten</h1>
+  <p class="lede">Änderungen an Titel und Beschreibung erscheinen im Änderungsverlauf der Meldung.</p>
+</header>
+{{if .Errors}}<div class="notice notice-error" role="alert"><p>Bitte prüfe deine Angaben:</p><ul>{{range .Errors}}<li>{{.}}</li>{{end}}</ul></div>{{end}}
+
+<form class="sheet" method="post" action="/r/{{$r.ID}}/bearbeiten" enctype="multipart/form-data">
+  <input type="hidden" name="csrf" value="{{$.CSRF}}">
+  <div class="field">
+    <label for="e-titel">Titel</label>
+    <input id="e-titel" name="titel" required minlength="5" maxlength="200" value="{{index .Values "titel"}}">
+  </div>
+  <div class="field">
+    <label for="e-text">Beschreibung</label>
+    <textarea id="e-text" name="beschreibung" data-md rows="14" required minlength="10" maxlength="50000">{{index .Values "beschreibung"}}</textarea>
+  </div>
+  <div class="field field-narrow">
+    <label for="e-version">Betroffene Version</label>
+    <input id="e-version" name="version" maxlength="60" value="{{index .Values "version"}}" placeholder="z. B. 2.4.1">
+  </div>
+  <div class="field">
+    <span class="label">Anhänge</span>
+    {{if .Attachments}}
+    <ul class="edit-files">
+      {{range .Attachments}}
+      <li>{{template "file"}}<span class="file-name">{{.Filename}}</span><span class="hint">{{bytes .Size}}</span>
+        {{if .CanRemove}}<button class="btn-text danger" formaction="/anhang/{{.ID}}/entfernen" formnovalidate name="zurueck" value="/r/{{$r.ID}}/bearbeiten" data-confirm-btn="Anhang „{{.Filename}}“ entfernen?">Entfernen</button>{{end}}
+      </li>
+      {{end}}
+    </ul>
+    {{end}}
+    <label class="filepick filepick-wide">
+      <input type="file" name="anhaenge" multiple data-filelist="files" data-max="{{.MaxFiles}}" data-max-bytes="{{.MaxBytes}}">
+      <span>Weitere Dateien hinzufügen</span>
+    </label>
+    <ul id="files" class="filelist"></ul>
+  </div>
+  <div class="sheet-actions">
+    <a class="btn-text" href="/r/{{$r.ID}}">Abbrechen</a>
+    <button class="btn btn-primary">Änderungen speichern</button>
+  </div>
+</form>
+</div>
+{{end}}{{end}}

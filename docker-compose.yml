@@ -9,6 +9,13 @@ services:
       - "127.0.0.1:8080:8080"   # hinter Caddy; direkt erreichbar: "8080:8080"
     volumes:
       - meldestelle-data:/data
+      - meldestelle-backups:/backups
+
+  # Optional: Virenscan der Anhänge. In .env MS_CLAMAV_ADDR=tcp://clamav:3310 setzen.
+  # clamav:
+  #   image: clamav/clamav:stable
+  #   restart: unless-stopped
 
 volumes:
   meldestelle-data:
+  meldestelle-backups:

@@ -54,6 +54,11 @@ type Config struct {
 	MaxUploadBytes    int64
 	MaxFiles          int
 	OIDC              OIDCConfig
+	LDAP              LDAPConfig
+	SMTP              SMTPConfig
+	ClamAV            ClamAVConfig
+	Backup            BackupConfig
+	Limits            LimitConfig
 }
 
 func getenv(k, def string) string {
@@ -69,6 +74,14 @@ func getbool(k string, def bool) bool {
 		return true
 	case "0", "false", "no", "nein", "off":
 		return false
+	}
+	return def
+}
+
+// getintZero erlaubt auch 0 (z. B. „Begrenzung aus“).
+func getintZero(k string, def int) int {
+	if n, err := strconv.Atoi(getenv(k, "")); err == nil && n >= 0 {
+		return n
 	}
 	return def
 }
@@ -117,6 +130,11 @@ func loadConfig() Config {
 			Scopes:       strings.Fields(getenv("MS_OIDC_SCOPES", "openid profile email")),
 		},
 	}
+	c.LDAP = loadLDAPConfig()
+	c.SMTP = loadSMTPConfig()
+	c.ClamAV = loadClamAVConfig()
+	c.Backup = loadBackupConfig()
+	c.Limits = LimitConfig{ReportsPerHour: getintZero("MS_LIMIT_REPORTS_PER_HOUR", 10), RepliesPerHour: getintZero("MS_LIMIT_REPLIES_PER_HOUR", 60)}
 	if !c.AllowLocalLogin {
 		c.AllowRegistration = false
 	}
@@ -138,6 +156,19 @@ func main() {
 		err = createAdminCmd(cfg, os.Args[2:])
 	case "healthcheck":
 		err = healthcheck(cfg)
+	case "backup":
+		err = backupCmd(cfg, os.Args[2:])
+	case "restore":
+		err = restoreCmd(cfg, os.Args[2:])
+	case "ldap-test":
+		fs := flag.NewFlagSet("ldap-test", flag.ExitOnError)
+		user := fs.String("user", "", "Benutzername")
+		_ = fs.Parse(os.Args[2:])
+		if *user == "" {
+			err = errors.New("-user fehlt")
+			break
+		}
+		err = ldapTestCmd(cfg, *user)
 	case "version", "-v", "--version":
 		fmt.Println("meldestelle", version)
 		return
@@ -164,6 +195,9 @@ Befehle:
                  -user NAME [-email MAIL] [-name ANZEIGENAME]
                  Passwort über MS_ADMIN_PASSWORD oder interaktive Eingabe
   healthcheck    Prüft /healthz des laufenden Servers (für Docker)
+  backup         Sicherung von Datenbank und Anhängen: [-out datei.tar.gz] (auch im laufenden Betrieb)
+  restore        Sicherung einspielen: -in datei.tar.gz [-force] (Server vorher stoppen)
+  ldap-test      LDAP-Anbindung prüfen: -user NAME (Passwort über MS_LDAP_TEST_PASSWORD oder Eingabe)
   version        Version anzeigen
 
 Konfiguration erfolgt über Umgebungsvariablen (siehe README.md).`)
@@ -188,11 +222,17 @@ func serve(cfg Config) error {
 		IdleTimeout:       2 * time.Minute,
 	}
 	go app.janitor(ctx)
+	if app.mailer != nil {
+		go app.mailWorker(ctx)
+	}
+	if cfg.Backup.Dir != "" {
+		go app.backupLoop(ctx)
+	}
 
 	errCh := make(chan error, 1)
 	go func() {
 		slog.Info("Meldestelle gestartet", "version", version, "listen", cfg.Listen, "url", cfg.BaseURL,
-			"oidc", cfg.OIDC.Enabled(), "lokal", cfg.AllowLocalLogin, "registrierung", cfg.AllowRegistration)
+			"oidc", cfg.OIDC.Enabled(), "ldap", cfg.LDAP.Enabled(), "mail", cfg.SMTP.Enabled(), "clamav", cfg.ClamAV.Addr != "", "backup", cfg.Backup.Dir != "", "lokal", cfg.AllowLocalLogin, "registrierung", cfg.AllowRegistration)
 		errCh <- srv.ListenAndServe()
 	}()
 

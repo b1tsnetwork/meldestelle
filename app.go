@@ -37,6 +37,11 @@ type App struct {
 	limiter   *limiter
 	dummyHash []byte
 
+	dir      directory // LDAP, nil wenn nicht konfiguriert
+	mailer   mailer    // nil, wenn kein SMTP konfiguriert ist
+	mailKick chan struct{}
+	scanner  virusScanner // nil ohne ClamAV
+
 	oidcMu sync.Mutex
 	oidc   *oidcProvider
 }
@@ -66,6 +71,24 @@ func newApp(ctx context.Context, cfg Config) (*App, error) {
 	if err := a.loadTemplates(); err != nil {
 		return nil, err
 	}
+	a.mailKick = make(chan struct{}, 1)
+	if cfg.SMTP.Enabled() {
+		m, err := newSMTPMailer(cfg.SMTP, cfg.BaseURL)
+		if err != nil {
+			return nil, err
+		}
+		a.mailer = m
+	}
+	if cfg.ClamAV.Addr != "" {
+		a.scanner = &clamd{cfg: cfg.ClamAV}
+	}
+	if cfg.LDAP.Enabled() {
+		d, err := newLDAPDirectory(cfg.LDAP)
+		if err != nil {
+			return nil, err
+		}
+		a.dir = d
+	}
 	if cfg.OIDC.Enabled() {
 		if _, err := a.getOIDC(ctx); err != nil {
 			slog.Warn("OIDC-Provider derzeit nicht erreichbar – neuer Versuch bei der nächsten Anmeldung", "err", err)
@@ -82,6 +105,7 @@ func (a *App) janitor(ctx context.Context) {
 			slog.Warn("Sitzungen aufräumen", "err", err)
 		}
 		a.limiter.cleanup()
+		a.db.Exec(`DELETE FROM outbox WHERE sent_at <> 0 AND created_at < ?`, now()-30*24*3600)
 		select {
 		case <-ctx.Done():
 			return
@@ -113,7 +137,20 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("POST /r/{id}/verwalten", a.requireLogin(a.handleManage))
 	mux.HandleFunc("POST /r/{id}/loeschen", a.requireLogin(a.handleDelete))
 	mux.HandleFunc("GET /anhang/{id}/{name}", a.handleAttachment)
+	mux.HandleFunc("POST /anhang/{id}/entfernen", a.requireLogin(a.handleRemoveAttachment))
+	mux.HandleFunc("GET /r/{id}/bearbeiten", a.requireLogin(a.handleEditReportForm))
+	mux.HandleFunc("POST /r/{id}/bearbeiten", a.requireLogin(a.handleEditReport))
+	mux.HandleFunc("POST /r/{id}/folgen", a.requireLogin(a.handleFollow))
+	mux.HandleFunc("GET /k/{id}/bearbeiten", a.requireLogin(a.handleEditCommentForm))
+	mux.HandleFunc("POST /k/{id}/bearbeiten", a.requireLogin(a.handleEditComment))
+	mux.HandleFunc("POST /k/{id}/loeschen", a.requireLogin(a.handleDeleteComment))
+	mux.HandleFunc("GET /s/{slug}/einstellungen", a.requireLogin(a.handleSoftwareSettings))
+	mux.HandleFunc("POST /s/{slug}/labels", a.requireLogin(a.handleLabelCreate))
+	mux.HandleFunc("POST /s/{slug}/labels/{id}", a.requireLogin(a.handleLabelUpdate))
+	mux.HandleFunc("POST /s/{slug}/labels/{id}/loeschen", a.requireLogin(a.handleLabelDelete))
+	mux.HandleFunc("POST /admin/testmail", a.requireAdmin(a.handleTestMail))
 	mux.HandleFunc("GET /api/aehnlich", a.requireLogin(a.handleSimilar))
+	mux.HandleFunc("POST /api/vorschau", a.requireLogin(a.handlePreview))
 
 	mux.HandleFunc("GET /login", a.handleLoginForm)
 	mux.HandleFunc("POST /login", a.handleLogin)
@@ -454,6 +491,8 @@ type Page struct {
 	OIDC         bool
 	OIDCLabel    string
 	LocalLogin   bool
+	LDAP         bool
+	LDAPHint     string
 	Registration bool
 	Version      string
 	Data         any
@@ -477,8 +516,18 @@ var funcs = template.FuncMap{
 	"join":        strings.Join,
 	"isImage":     isInlineImage,
 	"sub":         func(a, b int) int { return a - b },
+	"md":          renderMarkdown,
+	"isInfected":  func(scan string) bool { return strings.HasPrefix(scan, "FOUND:") },
+	"signature":   func(scan string) string { return strings.TrimPrefix(scan, "FOUND:") },
+	"dict": func(kv ...any) map[string]any {
+		m := map[string]any{}
+		for i := 0; i+1 < len(kv); i += 2 {
+			m[kv[i].(string)] = kv[i+1]
+		}
+		return m
+	},
 	"excerpt": func(s string, n int) string {
-		s = strings.Join(strings.Fields(s), " ")
+		s = plainText(s)
 		if r := []rune(s); len(r) > n {
 			return string(r[:n]) + " …"
 		}
@@ -557,6 +606,8 @@ func (a *App) render(w http.ResponseWriter, r *http.Request, status int, name, t
 		OIDC:         a.cfg.OIDC.Enabled(),
 		OIDCLabel:    a.cfg.OIDC.ButtonLabel,
 		LocalLogin:   a.cfg.AllowLocalLogin,
+		LDAP:         a.dir != nil,
+		LDAPHint:     a.cfg.LDAP.Hint,
 		Registration: a.cfg.AllowRegistration,
 		Version:      version,
 		Data:         data,

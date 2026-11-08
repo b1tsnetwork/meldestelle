@@ -189,3 +189,148 @@
   document.querySelectorAll('input[name="art"]').forEach((i) => i.addEventListener('change', search));
   search();
 })();
+
+// Sicherheitsabfragen für einzelne Buttons (formaction) und Links
+document.addEventListener('click', (e) => {
+  const el = e.target.closest('[data-confirm-btn], [data-confirm-link]');
+  if (!el) return;
+  const msg = el.dataset.confirmBtn || el.dataset.confirmLink;
+  if (!window.confirm(msg)) e.preventDefault();
+});
+
+// Markdown-Editor: Schreiben / Vorschau
+(() => {
+  const csrf = document.querySelector('meta[name="csrf-token"]')?.content || '';
+  let n = 0;
+  document.querySelectorAll('textarea[data-md]').forEach((ta) => {
+    n++;
+    const wrap = document.createElement('div');
+    wrap.className = 'md-editor';
+    const bar = document.createElement('div');
+    bar.className = 'md-tabs';
+    bar.setAttribute('role', 'tablist');
+    const mk = (label, sel) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'md-tab';
+      b.textContent = label;
+      b.setAttribute('role', 'tab');
+      b.setAttribute('aria-selected', String(sel));
+      return b;
+    };
+    const tWrite = mk('Schreiben', true);
+    const tPrev = mk('Vorschau', false);
+    const help = document.createElement('details');
+    help.className = 'md-help';
+    help.innerHTML = '<summary>Formatierung</summary><table><tbody>' +
+      '<tr><td><code>**fett**</code></td><td><strong>fett</strong></td></tr>' +
+      '<tr><td><code>_kursiv_</code></td><td><em>kursiv</em></td></tr>' +
+      '<tr><td><code>`code`</code></td><td><code>code</code></td></tr>' +
+      '<tr><td><code>```</code> … <code>```</code></td><td>Codeblock für Logs und Stacktraces</td></tr>' +
+      '<tr><td><code>- Punkt</code> / <code>1. Schritt</code></td><td>Listen</td></tr>' +
+      '<tr><td><code>[Text](https://…)</code></td><td>Link</td></tr>' +
+      '<tr><td><code>&gt; Zitat</code></td><td>Zitat</td></tr></tbody></table>';
+    bar.append(tWrite, tPrev, help);
+    const prev = document.createElement('div');
+    prev.className = 'md-preview prose md';
+    prev.hidden = true;
+    prev.id = 'md-prev-' + n;
+    ta.parentNode.insertBefore(wrap, ta);
+    wrap.append(bar, ta, prev);
+
+    const show = (preview) => {
+      tWrite.setAttribute('aria-selected', String(!preview));
+      tPrev.setAttribute('aria-selected', String(preview));
+      ta.hidden = preview;
+      prev.hidden = !preview;
+    };
+    tWrite.addEventListener('click', () => { show(false); ta.focus(); });
+    tPrev.addEventListener('click', async () => {
+      prev.style.minHeight = ta.offsetHeight + 'px';
+      show(true);
+      if (!ta.value.trim()) { prev.innerHTML = '<p class="hint">Nichts zum Anzeigen.</p>'; return; }
+      prev.innerHTML = '<p class="hint">Vorschau wird geladen …</p>';
+      try {
+        const body = new URLSearchParams({ text: ta.value });
+        const res = await fetch('/api/vorschau', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Accept': 'application/json', 'X-CSRF-Token': csrf },
+          body,
+        });
+        if (!res.ok) throw new Error(res.status);
+        prev.innerHTML = (await res.json()).html; // serverseitig sicher gerendert (kein Roh-HTML)
+      } catch {
+        prev.innerHTML = '<p class="hint">Vorschau nicht verfügbar.</p>';
+      }
+    });
+  });
+})();
+
+// Folgen ohne Neuladen
+document.addEventListener('submit', async (e) => {
+  const form = e.target;
+  if (!form.matches('form[data-follow]')) return;
+  e.preventDefault();
+  const csrf = document.querySelector('meta[name="csrf-token"]')?.content || '';
+  const btn = form.querySelector('button');
+  btn.disabled = true;
+  try {
+    const res = await fetch(form.action, {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Accept': 'application/json', 'X-CSRF-Token': csrf }, body: new FormData(form),
+    });
+    if (!res.ok) throw new Error(res.status);
+    const { following } = await res.json();
+    btn.classList.toggle('is-on', following);
+    btn.setAttribute('aria-pressed', String(following));
+    btn.querySelector('span').textContent = following ? 'Du folgst' : 'Folgen';
+    form.querySelector('.follow-hint').textContent = following
+      ? 'Du wirst über Antworten und Änderungen informiert.'
+      : 'Bei Antworten und Änderungen benachrichtigt werden.';
+  } catch {
+    form.submit();
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// Bearbeiten-Panel: Duplikat-Feld und Vorschläge
+(() => {
+  const form = document.querySelector('form[data-triage]');
+  if (!form) return;
+  const status = form.querySelector('select[name="status"]');
+  const field = form.querySelector('.dup-field');
+  const input = field.querySelector('input');
+  const list = field.querySelector('.dup-suggest');
+  let loaded = false;
+  const load = async () => {
+    if (loaded) return;
+    loaded = true;
+    const q = new URLSearchParams({ software: form.dataset.software, q: form.dataset.title, ohne: form.dataset.report });
+    try {
+      const res = await fetch('/api/aehnlich?' + q, { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' });
+      const hits = res.ok ? await res.json() : [];
+      list.replaceChildren(...hits.map((h) => {
+        const li = document.createElement('li');
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'dup-pick';
+        const ref = document.createElement('span');
+        ref.className = 'ref';
+        ref.textContent = '#' + h.id;
+        b.append(ref, document.createTextNode(' ' + h.title));
+        b.addEventListener('click', () => { input.value = '#' + h.id; input.focus(); });
+        li.append(b);
+        return li;
+      }));
+    } catch { /* keine Vorschläge */ }
+  };
+  const update = () => {
+    const dup = status.value === 'duplicate';
+    field.hidden = !dup;
+    input.required = dup;
+    if (dup) load();
+  };
+  status.addEventListener('change', update);
+  update();
+})();

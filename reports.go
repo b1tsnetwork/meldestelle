@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -14,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -28,20 +30,24 @@ type link struct {
 }
 
 type listPage struct {
-	Software   *Software
-	SoftwareID int64
-	Developers []string
-	Softwares  []Software
-	Reports    []Report
-	Filter     listFilter
-	BasePath   string
-	Self       string
-	KindLinks  []link
-	SortLinks  []link
-	Statuses   []option
-	Page       int
-	PrevURL    string
-	NextURL    string
+	Software    *Software
+	SoftwareID  int64
+	Developers  []string
+	Softwares   []Software
+	Reports     []Report
+	Filter      listFilter
+	BasePath    string
+	Self        string
+	KindLinks   []link
+	SortLinks   []link
+	Statuses    []option
+	Page        int
+	PrevURL     string
+	NextURL     string
+	Labels      []Label // Labels der gewählten Software (Filter)
+	ActiveLabel *Label
+	IsDev       bool // Entwickler dieser Software bzw. irgendeiner Software
+	CanSettings bool
 }
 
 func (f listFilter) values(page int) url.Values {
@@ -60,6 +66,12 @@ func (f listFilter) values(page int) url.Values {
 	}
 	if f.Mine {
 		v.Set("meine", "1")
+	}
+	if f.Assigned {
+		v.Set("zugewiesen", "1")
+	}
+	if f.Label != 0 {
+		v.Set("label", strconv.FormatInt(f.Label, 10))
 	}
 	if page > 1 {
 		v.Set("seite", strconv.Itoa(page))
@@ -106,6 +118,20 @@ func (a *App) handleList(w http.ResponseWriter, r *http.Request) {
 	if valid(statuses, q.Get("status")) {
 		f.Status = q.Get("status")
 	}
+	f.Assigned = q.Get("zugewiesen") == "1" && u != nil
+	if id := parseID(q.Get("label")); id != 0 {
+		var l Label
+		if a.db.QueryRow(`SELECT id, software_id, name, color FROM labels WHERE id = ?`, id).Scan(&l.ID, &l.SoftwareID, &l.Name, &l.Color) == nil {
+			f.Label, p.ActiveLabel = l.ID, &l
+		}
+	}
+	if p.Software != nil {
+		p.Labels, _ = a.labelsFor(p.Software.ID)
+		p.CanSettings = a.canManageSoftware(u, p.Software.ID)
+		p.IsDev = p.CanSettings
+	} else {
+		p.IsDev = u != nil && (u.IsAdmin || a.isAnyDeveloper(u.ID))
+	}
 	if f.Sort != "top" && f.Sort != "neu" {
 		f.Sort = "hot"
 	}
@@ -121,6 +147,10 @@ func (a *App) handleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.Reports = reports
+	if err := a.attachLabels(p.Reports); err != nil {
+		a.serverError(w, r, err)
+		return
+	}
 	if p.Softwares, err = a.listSoftware(false); err != nil {
 		a.serverError(w, r, err)
 		return
@@ -198,6 +228,9 @@ func (a *App) handleCreate(w http.ResponseWriter, r *http.Request) {
 		"beschreibung": strings.TrimSpace(r.PostFormValue("beschreibung")),
 	}
 	var errs []string
+	if over, max := a.overLimit(u, "report"); over {
+		errs = append(errs, fmt.Sprintf("Du hast in der letzten Stunde bereits %d Meldungen erstellt. Bitte warte etwas, bevor du die nächste abschickst.", max))
+	}
 	sw, err := a.softwareBy("id", parseID(vals["software"]))
 	if err != nil {
 		errs = append(errs, "Bitte wähle eine Software aus.")
@@ -215,6 +248,14 @@ func (a *App) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if msg := a.validateFiles(files); msg != "" {
 		errs = append(errs, msg)
 	}
+	confidential := vals["art"] == "security"
+	var scans []string
+	if len(errs) == 0 {
+		var msg string
+		if scans, msg = a.scanUploads(r.Context(), files, confidential); msg != "" {
+			errs = append(errs, msg)
+		}
+	}
 	if len(errs) > 0 {
 		list, _ := a.listSoftware(false)
 		a.render(w, r, http.StatusUnprocessableEntity, "new.html", "Neue Meldung",
@@ -222,13 +263,13 @@ func (a *App) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	confidential := vals["art"] == "security"
 	score := 1
 	if confidential {
 		score = 0
 	}
 	ts := now()
 	var saved []string
+	var id int64
 	err = a.tx(func(tx *sql.Tx) error {
 		res, err := tx.Exec(`INSERT INTO reports (software_id, author_id, kind, status, title, body, version, confidential, score, created_at, updated_at)
 			VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)`,
@@ -236,14 +277,16 @@ func (a *App) handleCreate(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		id, _ := res.LastInsertId()
-		vals["id"] = itoa(id)
+		id, _ = res.LastInsertId()
 		if !confidential {
 			if _, err := tx.Exec(`INSERT INTO votes (report_id, user_id, created_at) VALUES (?, ?, ?)`, id, u.ID, ts); err != nil {
 				return err
 			}
 		}
-		saved, err = a.storeFiles(tx, id, nil, u.ID, files)
+		if _, err := tx.Exec(`INSERT INTO follows (report_id, user_id, created_at) VALUES (?, ?, ?)`, id, u.ID, ts); err != nil {
+			return err
+		}
+		saved, err = a.storeFiles(tx, id, nil, u.ID, files, scans)
 		return err
 	})
 	if err != nil {
@@ -251,12 +294,15 @@ func (a *App) handleCreate(w http.ResponseWriter, r *http.Request) {
 		a.serverError(w, r, err)
 		return
 	}
+	if rep, err := a.getReport(id, u); err == nil {
+		a.notifyNewReport(rep)
+	}
 	if confidential {
 		a.flash(w, "ok", "Danke! Deine Sicherheitsmeldung ist nur für dich und die Entwickler sichtbar.")
 	} else {
-		a.flash(w, "ok", "Danke für deine Meldung!")
+		a.flash(w, "ok", "Danke für deine Meldung! Du wirst über Antworten und Änderungen informiert.")
 	}
-	redirect(w, r, "/r/"+vals["id"])
+	redirect(w, r, "/r/"+itoa(id))
 }
 
 // ---------- Detailansicht ----------
@@ -268,6 +314,13 @@ type reportPage struct {
 	Events      []Comment // Änderungsverlauf (Audit)
 	Developers  []UserRef
 	CanManage   bool
+	CanEdit     bool
+	CanDelete   bool
+	Following   bool
+	Original    *Report // bei Duplikaten: das Original (nil, falls nicht sichtbar)
+	Duplicates  []Report
+	SoftLabels  []Label // alle Labels der Software (für Entwickler)
+	LabelSet    map[int64]bool
 	Statuses    []option
 	Kinds       []option
 	MaxFiles    int
@@ -277,8 +330,12 @@ type reportPage struct {
 // loadVisibleReport liefert 404 für nicht existierende UND nicht sichtbare Meldungen,
 // damit sich die Existenz vertraulicher Meldungen nicht erraten lässt.
 func (a *App) loadVisibleReport(w http.ResponseWriter, r *http.Request) (*Report, bool) {
+	return a.loadVisibleReportID(w, r, parseID(r.PathValue("id")))
+}
+
+func (a *App) loadVisibleReportID(w http.ResponseWriter, r *http.Request, id int64) (*Report, bool) {
 	u := currentUser(r)
-	rep, err := a.getReport(parseID(r.PathValue("id")), u)
+	rep, err := a.getReport(id, u)
 	if notFoundErr(err) || (err == nil && !a.canView(u, rep)) {
 		a.notFound(w, r)
 		return nil, false
@@ -290,12 +347,27 @@ func (a *App) loadVisibleReport(w http.ResponseWriter, r *http.Request) (*Report
 	return rep, true
 }
 
+// canAuthorDelete: Autoren dürfen ihre Meldung zurückziehen, solange sich niemand sonst beteiligt hat.
+func (a *App) canAuthorDelete(u *User, rep *Report) bool {
+	if u == nil || u.ID != rep.AuthorID {
+		return false
+	}
+	var others int
+	a.db.QueryRow(`SELECT COUNT(*) FROM comments WHERE report_id = ? AND is_system = 0 AND deleted_at = 0 AND author_id <> ?`, rep.ID, u.ID).Scan(&others)
+	var votes int
+	a.db.QueryRow(`SELECT COUNT(*) FROM votes WHERE report_id = ? AND user_id <> ?`, rep.ID, u.ID).Scan(&votes)
+	var dups int
+	a.db.QueryRow(`SELECT COUNT(*) FROM reports WHERE duplicate_of = ?`, rep.ID).Scan(&dups)
+	return others == 0 && votes == 0 && dups == 0
+}
+
 func (a *App) handleReport(w http.ResponseWriter, r *http.Request) {
 	rep, ok := a.loadVisibleReport(w, r)
 	if !ok {
 		return
 	}
 	u := currentUser(r)
+	manage := a.canManage(u, rep)
 	atts, err := a.attachmentsForReport(rep.ID)
 	if err != nil {
 		a.serverError(w, r, err)
@@ -318,6 +390,7 @@ func (a *App) handleReport(w http.ResponseWriter, r *http.Request) {
 	byComment := map[int64][]Attachment{}
 	var top []Attachment
 	for _, at := range atts {
+		at.CanRemove = u != nil && (manage || at.UploaderID == u.ID)
 		if at.CommentID.Valid {
 			byComment[at.CommentID.Int64] = append(byComment[at.CommentID.Int64], at)
 		} else {
@@ -330,15 +403,57 @@ func (a *App) handleReport(w http.ResponseWriter, r *http.Request) {
 		c.AuthorIsDev = devSet[c.AuthorID]
 		if c.IsSystem {
 			events = append(events, c)
-		} else {
-			replies = append(replies, c)
+			continue
+		}
+		if !c.Deleted() && u != nil {
+			c.CanEdit = c.AuthorID == u.ID
+			c.CanDelete = c.AuthorID == u.ID || manage
+		}
+		replies = append(replies, c)
+	}
+	p := reportPage{
+		Report: rep, Attachments: top, Replies: replies, Events: events, Developers: devs,
+		CanManage: manage, CanEdit: u != nil && (manage || u.ID == rep.AuthorID),
+		CanDelete: manage || a.canAuthorDelete(u, rep),
+		Statuses:  statuses, Kinds: kinds, MaxFiles: a.cfg.MaxFiles, MaxBytes: a.cfg.MaxUploadBytes,
+	}
+	if u != nil {
+		p.Following = a.isFollowing(rep.ID, u.ID)
+	}
+	rep.Labels, _ = a.reportLabels(rep.ID)
+	if rep.DuplicateOf != 0 {
+		if orig, err := a.getReport(rep.DuplicateOf, u); err == nil && a.canView(u, orig) {
+			p.Original = orig
 		}
 	}
-	a.render(w, r, http.StatusOK, "report.html", rep.Title, reportPage{
-		Report: rep, Attachments: top, Replies: replies, Events: events, Developers: devs,
-		CanManage: a.canManage(u, rep), Statuses: statuses, Kinds: kinds,
-		MaxFiles: a.cfg.MaxFiles, MaxBytes: a.cfg.MaxUploadBytes,
-	})
+	p.Duplicates, _ = a.visibleDuplicates(u, rep.ID)
+	if manage {
+		p.SoftLabels, _ = a.labelsFor(rep.SoftwareID)
+		p.LabelSet = map[int64]bool{}
+		for _, l := range rep.Labels {
+			p.LabelSet[l.ID] = true
+		}
+	}
+	a.render(w, r, http.StatusOK, "report.html", rep.Title, p)
+}
+
+func (a *App) visibleDuplicates(u *User, id int64) ([]Report, error) {
+	args := append([]any{uid(u)}, visibilityArgs(u)...)
+	args = append(args, id)
+	rows, err := a.db.Query(reportSelect("''")+` WHERE `+visibilitySQL+` AND r.duplicate_of = ? ORDER BY r.created_at`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Report
+	for rows.Next() {
+		rep, err := scanReport(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *rep)
+	}
+	return out, rows.Err()
 }
 
 // ---------- Upvote ----------
@@ -350,6 +465,10 @@ func (a *App) handleVote(w http.ResponseWriter, r *http.Request) {
 	}
 	if rep.Confidential {
 		a.errorPage(w, r, http.StatusBadRequest, "Vertrauliche Meldungen können nicht bewertet werden.")
+		return
+	}
+	if rep.DuplicateOf != 0 {
+		a.errorPage(w, r, http.StatusBadRequest, fmt.Sprintf("Diese Meldung ist ein Duplikat. Bitte unterstütze stattdessen die Original-Meldung #%d.", rep.DuplicateOf))
 		return
 	}
 	u := currentUser(r)
@@ -386,7 +505,7 @@ func (a *App) handleVote(w http.ResponseWriter, r *http.Request) {
 	redirect(w, r, back)
 }
 
-// ---------- Kommentare ----------
+// ---------- Antworten ----------
 
 func (a *App) handleComment(w http.ResponseWriter, r *http.Request) {
 	rep, ok := a.loadVisibleReport(w, r)
@@ -394,21 +513,33 @@ func (a *App) handleComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := currentUser(r)
+	back := "/r/" + itoa(rep.ID) + "#antworten"
 	body := strings.TrimSpace(r.PostFormValue("text"))
 	files := uploadedFiles(r)
 	if body == "" && len(files) == 0 {
-		a.flash(w, "error", "Der Kommentar ist leer.")
-		redirect(w, r, "/r/"+itoa(rep.ID))
+		a.flash(w, "error", "Die Antwort ist leer.")
+		redirect(w, r, back)
 		return
 	}
 	if len([]rune(body)) > 20000 {
-		a.flash(w, "error", "Der Kommentar ist zu lang (max. 20.000 Zeichen).")
-		redirect(w, r, "/r/"+itoa(rep.ID))
+		a.flash(w, "error", "Die Antwort ist zu lang (max. 20.000 Zeichen).")
+		redirect(w, r, back)
+		return
+	}
+	if over, max := a.overLimit(u, "reply"); over {
+		a.flash(w, "error", fmt.Sprintf("Du hast in der letzten Stunde bereits %d Antworten geschrieben. Bitte warte etwas.", max))
+		redirect(w, r, back)
 		return
 	}
 	if msg := a.validateFiles(files); msg != "" {
 		a.flash(w, "error", msg)
-		redirect(w, r, "/r/"+itoa(rep.ID))
+		redirect(w, r, back)
+		return
+	}
+	scans, msg := a.scanUploads(r.Context(), files, rep.Confidential)
+	if msg != "" {
+		a.flash(w, "error", msg)
+		redirect(w, r, back)
 		return
 	}
 	var saved []string
@@ -423,7 +554,10 @@ func (a *App) handleComment(w http.ResponseWriter, r *http.Request) {
 		if _, err := tx.Exec(`UPDATE reports SET updated_at = ? WHERE id = ?`, ts, rep.ID); err != nil {
 			return err
 		}
-		saved, err = a.storeFiles(tx, rep.ID, &cid, u.ID, files)
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO follows (report_id, user_id, created_at) VALUES (?, ?, ?)`, rep.ID, u.ID, ts); err != nil {
+			return err
+		}
+		saved, err = a.storeFiles(tx, rep.ID, &cid, u.ID, files, scans)
 		return err
 	})
 	if err != nil {
@@ -431,10 +565,30 @@ func (a *App) handleComment(w http.ResponseWriter, r *http.Request) {
 		a.serverError(w, r, err)
 		return
 	}
+	text := body
+	if text == "" {
+		text = fmt.Sprintf("(%d %s)", len(files), map[bool]string{true: "Anhang", false: "Anhänge"}[len(files) == 1])
+	}
+	a.notifyFollowers(rep, u, fmt.Sprintf("%s hat auf Meldung #%d geantwortet:", u.Name(), rep.ID), text, "k"+itoa(cid))
 	redirect(w, r, fmt.Sprintf("/r/%d#k%d", rep.ID, cid))
 }
 
-// ---------- Verwaltung durch Entwickler ----------
+// ---------- Bearbeiten durch Entwickler (Triage) ----------
+
+// resolveOriginal folgt Duplikat-Ketten bis zur Original-Meldung.
+func (a *App) resolveOriginal(id int64) (int64, error) {
+	for i := 0; i < 20; i++ {
+		var next sql.NullInt64
+		if err := a.db.QueryRow(`SELECT duplicate_of FROM reports WHERE id = ?`, id).Scan(&next); err != nil {
+			return 0, err
+		}
+		if !next.Valid {
+			return id, nil
+		}
+		id = next.Int64
+	}
+	return 0, errors.New("Duplikat-Kette zu lang")
+}
 
 func (a *App) handleManage(w http.ResponseWriter, r *http.Request) {
 	rep, ok := a.loadVisibleReport(w, r)
@@ -442,18 +596,78 @@ func (a *App) handleManage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := currentUser(r)
+	back := "/r/" + itoa(rep.ID)
 	if !a.canManage(u, rep) {
 		a.errorPage(w, r, http.StatusForbidden, "Nur Entwickler dieser Software dürfen Meldungen bearbeiten.")
 		return
 	}
+	fail := func(msg string) {
+		a.flash(w, "error", msg)
+		redirect(w, r, back+"#bearbeiten")
+	}
 	status, kind := r.PostFormValue("status"), r.PostFormValue("art")
 	if !valid(statuses, status) || !valid(kinds, kind) {
-		a.errorPage(w, r, http.StatusBadRequest, "Ungültiger Status oder ungültige Art.")
+		fail("Ungültiger Status oder ungültige Art.")
 		return
 	}
 	confidential := r.PostFormValue("vertraulich") == "1"
 	if kind == "security" && rep.Kind != "security" {
 		confidential = true // Umklassifizierung zu Sicherheit macht immer vertraulich
+	}
+	fixedIn := cleanLine(r.PostFormValue("behoben_in"), 60)
+
+	// Zuständigkeit: nur Entwickler dieser Software
+	assignee := parseID(r.PostFormValue("zustaendig"))
+	devs, _ := a.developersOf(rep.SoftwareID)
+	devName := map[int64]string{}
+	for _, d := range devs {
+		devName[d.ID] = d.Name
+	}
+	if assignee != 0 && devName[assignee] == "" {
+		fail("Zuständig kann nur ein Entwickler dieser Software sein.")
+		return
+	}
+
+	// Labels: nur Labels dieser Software
+	softLabels, _ := a.labelsFor(rep.SoftwareID)
+	labelByID := map[int64]Label{}
+	for _, l := range softLabels {
+		labelByID[l.ID] = l
+	}
+	want := map[int64]bool{}
+	for _, v := range r.PostForm["labels"] {
+		if id := parseID(v); labelByID[id].ID != 0 {
+			want[id] = true
+		}
+	}
+	current, _ := a.reportLabels(rep.ID)
+	have := map[int64]bool{}
+	for _, l := range current {
+		have[l.ID] = true
+	}
+
+	// Duplikat
+	var original *Report
+	if status == "duplicate" {
+		ref := parseID(strings.TrimPrefix(strings.TrimSpace(r.PostFormValue("duplikat")), "#"))
+		if ref == 0 {
+			fail("Bitte die Nummer der Original-Meldung angeben, z. B. #12.")
+			return
+		}
+		root, err := a.resolveOriginal(ref)
+		if err != nil {
+			fail(fmt.Sprintf("Meldung #%d gibt es nicht.", ref))
+			return
+		}
+		if root == rep.ID {
+			fail("Eine Meldung kann kein Duplikat von sich selbst sein.")
+			return
+		}
+		original, err = a.getReport(root, u)
+		if err != nil || original.SoftwareID != rep.SoftwareID {
+			fail(fmt.Sprintf("Meldung #%d gehört nicht zu %s.", ref, rep.SoftwareName))
+			return
+		}
 	}
 
 	var changes []string
@@ -470,16 +684,119 @@ func (a *App) handleManage(w http.ResponseWriter, r *http.Request) {
 			changes = append(changes, "Veröffentlicht – die Meldung ist jetzt für alle sichtbar.")
 		}
 	}
+	if assignee != rep.AssigneeID {
+		switch {
+		case assignee == 0:
+			changes = append(changes, "Zuständigkeit aufgehoben (bisher "+rep.AssigneeName+")")
+		case rep.AssigneeID == 0:
+			changes = append(changes, "Zuständig: "+devName[assignee])
+		default:
+			changes = append(changes, "Zuständig: "+rep.AssigneeName+" → "+devName[assignee])
+		}
+	}
+	if fixedIn != rep.FixedIn {
+		if fixedIn == "" {
+			changes = append(changes, "„Behoben in“ entfernt")
+		} else {
+			changes = append(changes, "Behoben in Version "+fixedIn)
+		}
+	}
+	var added, removed []string
+	for id := range want {
+		if !have[id] {
+			added = append(added, labelByID[id].Name)
+		}
+	}
+	for id := range have {
+		if !want[id] {
+			removed = append(removed, labelByID[id].Name)
+		}
+	}
+	sort.Strings(added)
+	sort.Strings(removed)
+	if len(added) > 0 {
+		changes = append(changes, "Labels hinzugefügt: "+strings.Join(added, ", "))
+	}
+	if len(removed) > 0 {
+		changes = append(changes, "Labels entfernt: "+strings.Join(removed, ", "))
+	}
+	newDup := int64(0)
+	if original != nil {
+		newDup = original.ID
+	}
+	var moved int64
+	if newDup != rep.DuplicateOf {
+		switch {
+		case newDup == 0:
+			changes = append(changes, fmt.Sprintf("Duplikat-Verknüpfung zu #%d aufgehoben", rep.DuplicateOf))
+		case original.Confidential && !confidential:
+			changes = append(changes, "Als Duplikat einer vertraulichen Meldung markiert")
+		default:
+			changes = append(changes, fmt.Sprintf("Als Duplikat von #%d markiert: %s", original.ID, original.Title))
+		}
+	}
 	if len(changes) == 0 {
 		a.flash(w, "info", "Keine Änderungen.")
-		redirect(w, r, "/r/"+itoa(rep.ID))
+		redirect(w, r, back)
 		return
 	}
+
 	err := a.tx(func(tx *sql.Tx) error {
 		ts := now()
-		if _, err := tx.Exec(`UPDATE reports SET status = ?, kind = ?, confidential = ?, updated_at = ? WHERE id = ?`,
-			status, kind, confidential, ts, rep.ID); err != nil {
+		var asg, dup any
+		if assignee != 0 {
+			asg = assignee
+		}
+		if newDup != 0 {
+			dup = newDup
+		}
+		if _, err := tx.Exec(`UPDATE reports SET status = ?, kind = ?, confidential = ?, assignee_id = ?, fixed_in = ?, duplicate_of = ?, updated_at = ? WHERE id = ?`,
+			status, kind, confidential, asg, fixedIn, dup, ts, rep.ID); err != nil {
 			return err
+		}
+		for id := range want {
+			if !have[id] {
+				if _, err := tx.Exec(`INSERT OR IGNORE INTO report_labels (report_id, label_id) VALUES (?, ?)`, rep.ID, id); err != nil {
+					return err
+				}
+			}
+		}
+		for id := range have {
+			if !want[id] {
+				if _, err := tx.Exec(`DELETE FROM report_labels WHERE report_id = ? AND label_id = ?`, rep.ID, id); err != nil {
+					return err
+				}
+			}
+		}
+		if newDup != 0 && newDup != rep.DuplicateOf {
+			// Duplikate dieser Meldung zeigen künftig direkt auf das Original
+			if _, err := tx.Exec(`UPDATE reports SET duplicate_of = ? WHERE duplicate_of = ?`, newDup, rep.ID); err != nil {
+				return err
+			}
+			// Stimmen übertragen (nur in öffentliche Originale) und Folgende übernehmen
+			if !original.Confidential {
+				res, err := tx.Exec(`INSERT OR IGNORE INTO votes (report_id, user_id, created_at) SELECT ?, user_id, created_at FROM votes WHERE report_id = ?`, newDup, rep.ID)
+				if err != nil {
+					return err
+				}
+				moved, _ = res.RowsAffected()
+				if _, err := tx.Exec(`UPDATE reports SET score = (SELECT COUNT(*) FROM votes WHERE report_id = ?) WHERE id = ?`, newDup, newDup); err != nil {
+					return err
+				}
+			}
+			if _, err := tx.Exec(`INSERT OR IGNORE INTO follows (report_id, user_id, created_at) SELECT ?, user_id, ? FROM follows WHERE report_id = ?`, newDup, ts, rep.ID); err != nil {
+				return err
+			}
+			note := fmt.Sprintf("#%d wurde als Duplikat hierher zusammengeführt", rep.ID)
+			if !confidential || original.Confidential {
+				note += ": " + rep.Title
+			}
+			if moved > 0 {
+				note += fmt.Sprintf(" (%d %s übernommen)", moved, map[bool]string{true: "Stimme", false: "Stimmen"}[moved == 1])
+			}
+			if _, err := tx.Exec(`INSERT INTO comments (report_id, author_id, body, is_system, created_at) VALUES (?, ?, ?, 1, ?)`, newDup, u.ID, note, ts); err != nil {
+				return err
+			}
 		}
 		_, err := tx.Exec(`INSERT INTO comments (report_id, author_id, body, is_system, created_at) VALUES (?, ?, ?, 1, ?)`,
 			rep.ID, u.ID, strings.Join(changes, "\n"), ts)
@@ -489,8 +806,17 @@ func (a *App) handleManage(w http.ResponseWriter, r *http.Request) {
 		a.serverError(w, r, err)
 		return
 	}
+	updated, err := a.getReport(rep.ID, u)
+	if err == nil {
+		var exclude []int64
+		if assignee != 0 && assignee != rep.AssigneeID {
+			a.notifyAssigned(updated, assignee, u)
+			exclude = append(exclude, assignee)
+		}
+		a.notifyFollowers(updated, u, fmt.Sprintf("%s hat Meldung #%d geändert:", u.Name(), rep.ID), strings.Join(changes, "\n"), "", exclude...)
+	}
 	a.flash(w, "ok", "Meldung aktualisiert.")
-	redirect(w, r, "/r/"+itoa(rep.ID))
+	redirect(w, r, back)
 }
 
 func (a *App) handleDelete(w http.ResponseWriter, r *http.Request) {
@@ -498,8 +824,9 @@ func (a *App) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !a.canManage(currentUser(r), rep) {
-		a.errorPage(w, r, http.StatusForbidden, "Nur Entwickler dieser Software dürfen Meldungen löschen.")
+	u := currentUser(r)
+	if !a.canManage(u, rep) && !a.canAuthorDelete(u, rep) {
+		a.errorPage(w, r, http.StatusForbidden, "Diese Meldung kann nicht mehr gelöscht werden, weil sich bereits andere beteiligt haben. Bitte einen Entwickler, sie zu schließen.")
 		return
 	}
 	atts, err := a.attachmentsForReport(rep.ID)
@@ -571,9 +898,13 @@ func sanitizeFilename(name string) string {
 
 // storeFiles schreibt die Dateien unter Zufallsnamen ins Datenverzeichnis und legt die DB-Einträge an.
 // Bei Fehlern gibt es die bereits geschriebenen Dateinamen zurück, damit der Aufrufer aufräumen kann.
-func (a *App) storeFiles(tx *sql.Tx, reportID int64, commentID *int64, uploader int64, files []*multipart.FileHeader) ([]string, error) {
+func (a *App) storeFiles(tx *sql.Tx, reportID int64, commentID *int64, uploader int64, files []*multipart.FileHeader, scans []string) ([]string, error) {
 	var saved []string
-	for _, fh := range files {
+	for i, fh := range files {
+		scan := ""
+		if i < len(scans) {
+			scan = scans[i]
+		}
 		rnd := make([]byte, 16)
 		if _, err := rand.Read(rnd); err != nil {
 			return saved, err
@@ -609,9 +940,9 @@ func (a *App) storeFiles(tx *sql.Tx, reportID int64, commentID *int64, uploader 
 		if commentID != nil {
 			cid = *commentID
 		}
-		if _, err := tx.Exec(`INSERT INTO attachments (report_id, comment_id, uploader_id, filename, content_type, size, sha256, storage_name, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			reportID, cid, uploader, sanitizeFilename(fh.Filename), ctype, size, hex.EncodeToString(h.Sum(nil)), storage, now()); err != nil {
+		if _, err := tx.Exec(`INSERT INTO attachments (report_id, comment_id, uploader_id, filename, content_type, size, sha256, storage_name, scan, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			reportID, cid, uploader, sanitizeFilename(fh.Filename), ctype, size, hex.EncodeToString(h.Sum(nil)), storage, scan, now()); err != nil {
 			return saved, err
 		}
 	}
@@ -662,7 +993,7 @@ func (a *App) handleAttachment(w http.ResponseWriter, r *http.Request) {
 	}
 	disp := "attachment"
 	ctype := "application/octet-stream"
-	if isInlineImage(at.ContentType) {
+	if isInlineImage(at.ContentType) && !strings.HasPrefix(at.Scan, "FOUND:") {
 		disp, ctype = "inline", at.ContentType
 	}
 	h.Set("Content-Type", ctype)

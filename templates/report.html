@@ -1,26 +1,57 @@
-{{define "content"}}{{with .Data}}{{$r := .Report}}
+{{define "content"}}{{with .Data}}{{$r := .Report}}{{$d := .}}
 <nav class="crumbs" aria-label="Pfad"><a href="/">Meldungen</a><span aria-hidden="true">/</span><a href="/s/{{$r.SoftwareSlug}}">{{$r.SoftwareName}}</a><span aria-hidden="true">/</span><span>#{{$r.ID}}</span></nav>
 
 {{if $r.Confidential}}
 <div class="hazard" role="note">
   {{template "lock"}}
-  <p><strong>Vertrauliche Meldung.</strong> Sichtbar nur für {{$r.AuthorName}}, die Entwickler von {{$r.SoftwareName}} und Administratoren. Anhänge sind ebenso geschützt.</p>
+  <p><strong>Vertrauliche Meldung.</strong> Sichtbar nur für {{$r.AuthorName}}, die Entwickler von {{$r.SoftwareName}} und Administratoren. Anhänge sind ebenso geschützt, E-Mail-Benachrichtigungen enthalten keine Inhalte.</p>
+</div>
+{{end}}
+
+{{if $r.DuplicateOf}}
+<div class="notice notice-dup" role="note">
+  {{if .Original}}
+  <p><strong>Duplikat.</strong> Dieses Anliegen wird in <a href="/r/{{.Original.ID}}">#{{.Original.ID}} {{.Original.Title}}</a> weiterverfolgt. Bitte unterstütze und kommentiere dort.</p>
+  {{else}}
+  <p><strong>Duplikat.</strong> Dieses Anliegen wird in einer vertraulichen Meldung weiterverfolgt.</p>
+  {{end}}
 </div>
 {{end}}
 
 <div class="dossier k-{{$r.Kind}}{{if $r.Confidential}} is-conf{{end}}">
   <article class="dossier-main">
     <header class="dossier-head">
-      <div class="ticket-tags">
-        <span class="kind">{{kindLabel $r.Kind}}</span>
-        {{template "status" $r.Status}}
+      <div class="dossier-top">
+        <div class="ticket-tags">
+          <span class="kind">{{kindLabel $r.Kind}}</span>
+          {{template "status" $r.Status}}
+          {{range $r.Labels}}<span class="label lc-{{.Color}}">{{.Name}}</span>{{end}}
+        </div>
+        {{if or .CanEdit .CanDelete}}
+        <div class="head-actions">
+          {{if .CanEdit}}<a class="btn btn-small" href="/r/{{$r.ID}}/bearbeiten">Bearbeiten</a>{{end}}
+          {{if .CanDelete}}
+          <form method="post" action="/r/{{$r.ID}}/loeschen" data-confirm="Meldung #{{$r.ID}} mit allen Antworten und Anhängen endgültig löschen?">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <button class="btn btn-small btn-danger-quiet">Löschen</button>
+          </form>
+          {{end}}
+        </div>
+        {{end}}
       </div>
       <h1>{{$r.Title}}</h1>
-      <p class="byline">Gemeldet von <strong>{{$r.AuthorName}}</strong> am <time datetime="{{iso $r.CreatedAt}}">{{date $r.CreatedAt}}</time></p>
+      <p class="byline">Gemeldet von <strong>{{$r.AuthorName}}</strong> am <time datetime="{{iso $r.CreatedAt}}">{{date $r.CreatedAt}}</time>{{if $r.EditedAt}}<span class="edited" title="{{date $r.EditedAt}}">, bearbeitet {{ago $r.EditedAt}}</span>{{end}}</p>
     </header>
 
-    <div class="prose">{{$r.Body}}</div>
-    {{template "attachments" .Attachments}}
+    <div class="prose md">{{md $r.Body}}</div>
+    {{template "attachments" (dict "List" .Attachments "CSRF" $.CSRF "Back" (printf "/r/%d" $r.ID))}}
+
+    {{if .Duplicates}}
+    <section class="dups-merged" aria-labelledby="h-dups">
+      <h2 id="h-dups">Zusammengeführte Duplikate</h2>
+      <ul>{{range .Duplicates}}<li><a href="/r/{{.ID}}"><span class="ref">#{{.ID}}</span> {{.Title}}</a> <span class="hint">von {{.AuthorName}}, {{ago .CreatedAt}}</span></li>{{end}}</ul>
+    </section>
+    {{end}}
 
     {{if .Events}}
     <details class="audit">
@@ -44,26 +75,45 @@
       {{if .Replies}}
       <ol>
       {{range .Replies}}
+        {{if .Deleted}}
+        <li class="reply is-deleted" id="k{{.ID}}">
+          <div class="reply-meta"><span>{{if eq .DeletedBy .AuthorID}}Antwort von {{.AuthorName}} gelöscht{{else}}Antwort von {{.AuthorName}} wurde von der Moderation entfernt{{end}}</span>
+          <time datetime="{{iso .DeletedAt}}" title="{{date .DeletedAt}}">{{ago .DeletedAt}}</time></div>
+        </li>
+        {{else}}
         <li class="reply{{if .AuthorIsDev}} by-dev{{end}}" id="k{{.ID}}">
-          <p class="reply-meta">
+          <div class="reply-meta">
             <strong>{{.AuthorName}}</strong>
             {{if .AuthorIsDev}}<span class="role role-dev">Entwickler</span>{{else if eq .AuthorID $r.AuthorID}}<span class="role">Meldende Person</span>{{end}}
-            <time datetime="{{iso .CreatedAt}}" title="{{date .CreatedAt}}">{{ago .CreatedAt}}</time>
-          </p>
-          {{if .Body}}<div class="prose">{{.Body}}</div>{{end}}
-          {{template "attachments" .Attachments}}
+            <a class="permalink" href="#k{{.ID}}"><time datetime="{{iso .CreatedAt}}" title="{{date .CreatedAt}}">{{ago .CreatedAt}}</time></a>
+            {{if .EditedAt}}<span class="edited" title="{{date .EditedAt}}">bearbeitet</span>{{end}}
+            {{if or .CanEdit .CanDelete}}
+            <span class="reply-actions-inline">
+              {{if .CanEdit}}<a href="/k/{{.ID}}/bearbeiten">Bearbeiten</a>{{end}}
+              {{if .CanDelete}}
+              <form method="post" action="/k/{{.ID}}/loeschen" class="inline" data-confirm="{{if eq .AuthorID $.User.ID}}Deine Antwort löschen?{{else}}Antwort von {{.AuthorName}} als Moderation entfernen?{{end}}">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <button class="btn-text danger">{{if eq .AuthorID $.User.ID}}Löschen{{else}}Entfernen{{end}}</button>
+              </form>
+              {{end}}
+            </span>
+            {{end}}
+          </div>
+          {{if .Body}}<div class="prose md">{{md .Body}}</div>{{end}}
+          {{template "attachments" (dict "List" .Attachments "CSRF" $.CSRF "Back" (printf "/r/%d#k%d" $r.ID .ID))}}
         </li>
+        {{end}}
       {{end}}
       </ol>
       {{else}}
       <p class="hint timeline-empty">Noch keine Antworten von Entwicklern oder Nutzern.</p>
       {{end}}
 
-    {{if $.User}}
+      {{if $.User}}
       <form class="reply-form" method="post" action="/r/{{$r.ID}}/kommentar" enctype="multipart/form-data">
         <input type="hidden" name="csrf" value="{{$.CSRF}}">
         <label for="text">Antworten</label>
-        <textarea id="text" name="text" rows="5" maxlength="20000" placeholder="Weitere Details, Schritte zur Reproduktion oder Logs"></textarea>
+        <textarea id="text" name="text" rows="5" maxlength="20000" data-md placeholder="Weitere Details, Schritte zur Reproduktion oder Logs"></textarea>
         <div class="reply-actions">
           <label class="filepick">
             <input type="file" name="anhaenge" multiple data-filelist="cfiles" data-max="{{.MaxFiles}}" data-max-bytes="{{.MaxBytes}}">
@@ -75,7 +125,7 @@
         <ul id="cfiles" class="filelist"></ul>
       </form>
       {{else}}
-      <p class="signin-hint"><a href="/login?next=/r/{{$r.ID}}">Melde dich an</a>, um zu antworten oder die Meldung zu unterstützen.</p>
+      <p class="signin-hint"><a href="/login?next=/r/{{$r.ID}}">Melde dich an</a>, um zu antworten, der Meldung zu folgen oder sie zu unterstützen.</p>
       {{end}}
     </section>
   </article>
@@ -85,6 +135,11 @@
       {{if $r.Confidential}}
         <span class="tally-lock">{{template "lock"}}</span>
         <p class="hint">Vertrauliche Meldungen werden nicht abgestimmt.</p>
+      {{else if $r.DuplicateOf}}
+        <div class="big-vote">
+          <p><span class="n">{{$r.Score}}</span> {{plural $r.Score "Stimme" "Stimmen"}}</p>
+          {{if .Original}}<a class="btn btn-block" href="/r/{{.Original.ID}}">Original #{{.Original.ID}} unterstützen</a>{{end}}
+        </div>
       {{else if $.User}}
         <form method="post" action="/r/{{$r.ID}}/vote" data-vote class="big-vote">
           <input type="hidden" name="csrf" value="{{$.CSRF}}">
@@ -97,54 +152,96 @@
           <p><span class="n">{{$r.Score}}</span> {{plural $r.Score "Stimme" "Stimmen"}}</p>
         </div>
       {{end}}
+      {{if $.User}}
+      <form method="post" action="/r/{{$r.ID}}/folgen" data-follow class="follow">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <button class="btn btn-block follow-btn{{if .Following}} is-on{{end}}" aria-pressed="{{.Following}}">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 22a2.5 2.5 0 0 0 2.5-2.5h-5A2.5 2.5 0 0 0 12 22m7-6V11a7 7 0 0 0-5.5-6.8V3.5a1.5 1.5 0 0 0-3 0v.7A7 7 0 0 0 5 11v5l-2 2v1h18v-1z" fill="currentColor"/></svg>
+          <span>{{if .Following}}Du folgst{{else}}Folgen{{end}}</span>
+        </button>
+        <p class="hint follow-hint">{{if .Following}}Du wirst über Antworten und Änderungen informiert.{{else}}Bei Antworten und Änderungen benachrichtigt werden.{{end}}</p>
+      </form>
+      {{end}}
     </div>
 
     <dl class="facts-list">
       <dt>Software</dt><dd><a href="/s/{{$r.SoftwareSlug}}">{{$r.SoftwareName}}</a></dd>
       <dt>Art</dt><dd>{{kindLabel $r.Kind}}</dd>
       <dt>Status</dt><dd>{{template "status" $r.Status}}</dd>
-      {{if $r.Version}}<dt>Version</dt><dd>{{$r.Version}}</dd>{{end}}
+      {{if $r.FixedIn}}<dt>Behoben in</dt><dd>Version {{$r.FixedIn}}</dd>{{end}}
+      <dt>Zuständig</dt><dd>{{if $r.AssigneeName}}{{$r.AssigneeName}}{{else}}<span class="hint">noch niemand</span>{{end}}</dd>
+      {{if $r.Version}}<dt>Betrifft</dt><dd>Version {{$r.Version}}</dd>{{end}}
       <dt>Nummer</dt><dd>#{{$r.ID}}</dd>
       <dt>Aktualisiert</dt><dd><time datetime="{{iso $r.UpdatedAt}}" title="{{date $r.UpdatedAt}}">{{ago $r.UpdatedAt}}</time></dd>
       {{if .Developers}}<dt>Entwickler</dt><dd>{{range $i, $d := .Developers}}{{if $i}}, {{end}}{{$d.Name}}{{end}}</dd>{{end}}
     </dl>
 
     {{if .CanManage}}
-    <form class="triage" method="post" action="/r/{{$r.ID}}/verwalten">
+    <form class="triage" id="bearbeiten" method="post" action="/r/{{$r.ID}}/verwalten" data-triage data-software="{{$r.SoftwareID}}" data-report="{{$r.ID}}" data-title="{{$r.Title}}">
       <h2>Bearbeiten</h2>
       <input type="hidden" name="csrf" value="{{$.CSRF}}">
       <label>Status
         <select name="status">{{range .Statuses}}<option value="{{.Value}}"{{if eq .Value $r.Status}} selected{{end}}>{{.Label}}</option>{{end}}</select>
       </label>
+      <div class="dup-field" {{if ne $r.Status "duplicate"}}hidden{{end}}>
+        <label>Duplikat von
+          <input name="duplikat" value="{{if $r.DuplicateOf}}#{{$r.DuplicateOf}}{{end}}" placeholder="#12" inputmode="numeric" autocomplete="off">
+        </label>
+        <p class="hint">Stimmen und Folgende werden auf das Original übertragen.</p>
+        <ul class="dup-suggest" aria-label="Ähnliche Meldungen"></ul>
+      </div>
       <label>Art
         <select name="art">{{range .Kinds}}<option value="{{.Value}}"{{if eq .Value $r.Kind}} selected{{end}}>{{.Label}}</option>{{end}}</select>
       </label>
+      <label>Zuständig
+        <select name="zustaendig">
+          <option value="">Niemand</option>
+          {{range .Developers}}<option value="{{.ID}}"{{if eq .ID $r.AssigneeID}} selected{{end}}>{{.Name}}</option>{{end}}
+        </select>
+      </label>
+      <label>Behoben in Version
+        <input name="behoben_in" value="{{$r.FixedIn}}" maxlength="60" placeholder="z. B. 2.4.2">
+      </label>
+      <fieldset class="label-pick">
+        <legend>Labels</legend>
+        {{range .SoftLabels}}
+        <label class="label-opt"><input type="checkbox" name="labels" value="{{.ID}}"{{if index $d.LabelSet .ID}} checked{{end}}><span class="label lc-{{.Color}}">{{.Name}}</span></label>
+        {{else}}<p class="hint">Noch keine Labels.</p>{{end}}
+        <a class="hint" href="/s/{{$r.SoftwareSlug}}/einstellungen">Labels verwalten</a>
+      </fieldset>
       <label class="toggle"><input type="checkbox" name="vertraulich" value="1"{{if $r.Confidential}} checked{{end}}><span>Nur für Entwickler sichtbar</span></label>
       <p class="hint">Wird eine Meldung zu Sicherheit umgestuft, ist sie automatisch vertraulich. Nach dem Fix kannst du sie hier freigeben.</p>
       <button class="btn btn-primary">Änderungen speichern</button>
-    </form>
-    <form method="post" action="/r/{{$r.ID}}/loeschen" data-confirm="Meldung #{{$r.ID}} mit allen Antworten und Anhängen endgültig löschen?" class="delete-form">
-      <input type="hidden" name="csrf" value="{{$.CSRF}}">
-      <button class="btn-text danger">Meldung löschen</button>
     </form>
     {{end}}
   </aside>
 </div>
 {{end}}{{end}}
 
-{{define "attachments"}}{{if .}}
+{{define "attachments"}}{{with .List}}
 <ul class="files">
   {{range .}}
-    {{if isImage .ContentType}}
-    <li class="file file-img"><a href="/anhang/{{.ID}}/{{pathesc .Filename}}" target="_blank" rel="noopener">
-      <img src="/anhang/{{.ID}}/{{pathesc .Filename}}" alt="{{.Filename}}" loading="lazy">
-      <span class="file-name">{{.Filename}}</span>
-    </a></li>
-    {{else}}
-    <li class="file"><a href="/anhang/{{.ID}}/{{pathesc .Filename}}" download>
-      {{template "file"}}<span class="file-name">{{.Filename}}</span><span class="file-size">{{bytes .Size}}</span>
-    </a></li>
-    {{end}}
+    {{$bad := isInfected .Scan}}
+    <li class="file{{if and (isImage .ContentType) (not $bad)}} file-img{{end}}{{if $bad}} file-bad{{end}}">
+      {{if and (isImage .ContentType) (not $bad)}}
+      <a href="/anhang/{{.ID}}/{{pathesc .Filename}}" target="_blank" rel="noopener">
+        <img src="/anhang/{{.ID}}/{{pathesc .Filename}}" alt="{{.Filename}}" loading="lazy">
+        <span class="file-name">{{.Filename}}</span>
+      </a>
+      {{else}}
+      <a href="/anhang/{{.ID}}/{{pathesc .Filename}}" download {{if $bad}}data-confirm-link="Diese Datei wurde als Schadsoftware erkannt ({{signature .Scan}}). Nur in einer isolierten Umgebung öffnen. Trotzdem herunterladen?"{{end}}>
+        {{template "file"}}<span class="file-name">{{.Filename}}</span><span class="file-size">{{bytes .Size}}</span>
+      </a>
+      {{if $bad}}<span class="file-warn" title="{{signature .Scan}}">Schadsoftware erkannt</span>{{end}}
+      {{end}}
+      {{if .CanRemove}}
+      <form method="post" action="/anhang/{{.ID}}/entfernen" class="file-remove" data-confirm="Anhang „{{.Filename}}“ entfernen?">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <input type="hidden" name="zurueck" value="{{$.Back}}">
+        <button aria-label="{{.Filename}} entfernen" title="Anhang entfernen">×</button>
+      </form>
+      {{end}}
+    </li>
   {{end}}
 </ul>
 {{end}}{{end}}

@@ -18,7 +18,10 @@
           {{if .Developers}}<p class="hint">Betreut von {{join .Developers ", "}}</p>{{end}}
         {{end}}
       </div>
-      {{if and $.User .Software}}<a class="btn btn-primary" href="/neu?software={{.Software.Slug}}">{{.Software.Name}} melden</a>{{end}}
+      <div class="board-actions">
+        {{if .CanSettings}}<a class="btn" href="/s/{{.Software.Slug}}/einstellungen">Einstellungen</a>{{end}}
+        {{if and $.User .Software}}<a class="btn btn-primary" href="/neu?software={{.Software.Slug}}">{{.Software.Name}} melden</a>{{end}}
+      </div>
     </header>
 
     <div class="controls">
@@ -28,18 +31,26 @@
       <form class="search" method="get" action="{{.BasePath}}" role="search">
         {{if .Filter.Kind}}<input type="hidden" name="art" value="{{.Filter.Kind}}">{{end}}
         {{if ne .Filter.Sort "hot"}}<input type="hidden" name="sort" value="{{.Filter.Sort}}">{{end}}
+        {{if and .Filter.Label (not .Labels)}}<input type="hidden" name="label" value="{{.Filter.Label}}">{{end}}
         <input type="search" name="q" value="{{.Filter.Query}}" placeholder="Meldungen durchsuchen" aria-label="Suchbegriff">
         <select name="status" data-autosubmit aria-label="Status">
           <option value="">Jeder Status</option>
           {{range .Statuses}}<option value="{{.Value}}"{{if eq .Value $.Data.Filter.Status}} selected{{end}}>{{.Label}}</option>{{end}}
         </select>
+        {{if .Labels}}
+        <select name="label" data-autosubmit aria-label="Label">
+          <option value="">Alle Labels</option>
+          {{range .Labels}}<option value="{{.ID}}"{{if eq .ID $.Data.Filter.Label}} selected{{end}}>{{.Name}}</option>{{end}}
+        </select>
+        {{end}}
         {{if $.User}}<label class="toggle"><input type="checkbox" name="meine" value="1"{{if .Filter.Mine}} checked{{end}} data-autosubmit><span>Nur meine</span></label>{{end}}
+        {{if .IsDev}}<label class="toggle"><input type="checkbox" name="zugewiesen" value="1"{{if .Filter.Assigned}} checked{{end}} data-autosubmit><span>Mir zugewiesen</span></label>{{end}}
         <button class="btn">Suchen</button>
       </form>
     </div>
 
     <div class="register-head">
-      <span class="hint">{{if .Reports}}{{len .Reports}}{{if .NextURL}}+{{end}} {{plural (len .Reports) "Meldung" "Meldungen"}}{{end}}</span>
+      <span class="hint">{{if .Reports}}{{len .Reports}}{{if .NextURL}}+{{end}} {{plural (len .Reports) "Meldung" "Meldungen"}}{{end}}{{with .ActiveLabel}} mit Label <span class="label lc-{{.Color}}">{{.Name}}</span> <a href="{{$.Data.BasePath}}">entfernen</a>{{end}}</span>
       <nav class="sort" aria-label="Sortierung">
         {{range .SortLinks}}<a href="{{.URL}}" {{if .Active}}aria-current="true"{{end}}>{{.Label}}</a>{{end}}
       </nav>
@@ -53,6 +64,8 @@
         <div class="tally">
           {{if .Confidential}}
             <span class="tally-lock" title="Vertraulich, keine Abstimmung">{{template "lock"}}</span>
+          {{else if .DuplicateOf}}
+            <span class="n" title="Duplikat von #{{.DuplicateOf}}">{{.Score}}</span>
           {{else if $.User}}
             <form method="post" action="/r/{{.ID}}/vote" data-vote>
               <input type="hidden" name="csrf" value="{{$.CSRF}}">
@@ -71,6 +84,7 @@
             {{template "status" .Status}}
             {{if .Confidential}}<span class="conf-tag">{{template "lock"}}Vertraulich</span>{{end}}
             {{if eq $.Data.SoftwareID 0}}<a class="sw" href="/s/{{.SoftwareSlug}}">{{.SoftwareName}}</a>{{end}}
+            {{range .Labels}}<a class="label lc-{{.Color}}" href="{{$.Data.BasePath}}?label={{.ID}}">{{.Name}}</a>{{end}}
           </div>
           <h3 class="ticket-title"><a href="/r/{{.ID}}">{{.Title}}</a></h3>
           {{if not .Done}}<p class="ticket-excerpt">{{excerpt .Body 180}}</p>{{end}}
@@ -79,7 +93,9 @@
             <span>{{.AuthorName}}</span>
             <time datetime="{{iso .CreatedAt}}" title="{{date .CreatedAt}}">{{ago .CreatedAt}}</time>
             {{if .Comments}}<span>{{.Comments}} {{plural .Comments "Antwort" "Antworten"}}</span>{{end}}
-            {{if .Version}}<span>Version {{.Version}}</span>{{end}}
+            {{if .AssigneeName}}<span class="assignee">Zuständig: {{.AssigneeName}}</span>{{end}}
+            {{if .FixedIn}}<span>Behoben in {{.FixedIn}}</span>{{else if .Version}}<span>Version {{.Version}}</span>{{end}}
+            {{if .DuplicateOf}}<span>Duplikat von #{{.DuplicateOf}}</span>{{end}}
           </p>
         </div>
       </li>
@@ -94,7 +110,7 @@
     {{end}}
     {{else}}
     <div class="empty">
-      {{if or .Filter.Query .Filter.Status .Filter.Kind .Filter.Mine}}
+      {{if or .Filter.Query .Filter.Status .Filter.Kind .Filter.Mine .Filter.Assigned .Filter.Label}}
         <h2>Keine Treffer</h2>
         <p>Für diese Filter gibt es keine Meldungen. <a href="{{.BasePath}}">Filter zurücksetzen</a></p>
       {{else}}

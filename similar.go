@@ -174,7 +174,7 @@ func tokenMatch(q string, qgrams map[string]bool, toks map[string]bool, gramCach
 	return best
 }
 
-func (a *App) findSimilar(u *User, softwareID int64, query string, limit int) ([]similarHit, error) {
+func (a *App) findSimilar(u *User, softwareID int64, query string, limit int, exclude int64) ([]similarHit, error) {
 	qtoks := tokenize(query)
 	if len(qtoks) == 0 {
 		return nil, nil
@@ -183,8 +183,8 @@ func (a *App) findSimilar(u *User, softwareID int64, query string, limit int) ([
 			(SELECT COUNT(*) FROM comments c WHERE c.report_id = r.id AND c.is_system = 0),
 			EXISTS (SELECT 1 FROM votes v WHERE v.report_id = r.id AND v.user_id = ?)
 		FROM reports r
-		WHERE r.software_id = ? AND r.confidential = 0
-		ORDER BY r.updated_at DESC LIMIT 5000`, uid(u), softwareID)
+		WHERE r.software_id = ? AND r.confidential = 0 AND r.duplicate_of IS NULL AND r.id <> ?
+		ORDER BY r.updated_at DESC LIMIT 5000`, uid(u), softwareID, exclude)
 	if err != nil {
 		return nil, err
 	}
@@ -279,7 +279,7 @@ func (a *App) handleSimilar(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, []similarHit{})
 		return
 	}
-	hits, err := a.findSimilar(currentUser(r), sid, title, 5)
+	hits, err := a.findSimilar(currentUser(r), sid, title, 5, parseID(q.Get("ohne")))
 	if err != nil {
 		a.serverError(w, r, err)
 		return

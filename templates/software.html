@@ -1,0 +1,44 @@
+{{define "content"}}{{with .Data}}{{$sw := .Software}}
+<div class="sheet-wrap">
+<nav class="crumbs" aria-label="Pfad"><a href="/">Meldungen</a><span aria-hidden="true">/</span><a href="/s/{{$sw.Slug}}">{{$sw.Name}}</a><span aria-hidden="true">/</span><span>Einstellungen</span></nav>
+<header class="sheet-head">
+  <h1>{{$sw.Name}}: Einstellungen</h1>
+  <p class="lede">Labels helfen, Meldungen zu ordnen, zum Beispiel nach Bereich, Plattform oder Priorität. Entwickler vergeben sie im Bearbeiten-Bereich einer Meldung.</p>
+</header>
+
+<section class="sheet">
+  <h2>Labels</h2>
+  {{if .Labels}}
+  <ul class="label-admin">
+    {{range .Labels}}
+    <li>
+      <form method="post" action="/s/{{$sw.Slug}}/labels/{{.ID}}" class="label-row">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <span class="label lc-{{.Color}}">{{.Name}}</span>
+        <input name="name" value="{{.Name}}" maxlength="40" required aria-label="Name">
+        <select name="farbe" aria-label="Farbe">{{$c := .Color}}{{range $.Data.Colors}}<option value="{{.Value}}"{{if eq .Value (printf "%d" $c)}} selected{{end}}>{{.Label}}</option>{{end}}</select>
+        <span class="hint">{{.Uses}} {{plural .Uses "Meldung" "Meldungen"}}</span>
+        <button class="btn btn-small">Speichern</button>
+        <button class="btn-text danger" formaction="/s/{{$sw.Slug}}/labels/{{.ID}}/loeschen" data-confirm-btn="Label „{{.Name}}“ löschen? Es wird von {{.Uses}} {{plural .Uses "Meldung" "Meldungen"}} entfernt.">Löschen</button>
+      </form>
+    </li>
+    {{end}}
+  </ul>
+  {{else}}<p class="hint">Noch keine Labels angelegt.</p>{{end}}
+
+  <form method="post" action="/s/{{$sw.Slug}}/labels" class="label-row label-new">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <input name="name" maxlength="40" required placeholder="Neues Label, z. B. Oberfläche" aria-label="Name des neuen Labels">
+    <select name="farbe" aria-label="Farbe">{{range .Colors}}<option value="{{.Value}}">{{.Label}}</option>{{end}}</select>
+    <button class="btn btn-primary btn-small">Label anlegen</button>
+  </form>
+  <div class="label-preview" aria-hidden="true">{{range .Colors}}<span class="label lc-{{.Value}}">{{.Label}}</span>{{end}}</div>
+</section>
+
+<section class="sheet">
+  <h2>Entwickler</h2>
+  <p>{{if .Developers}}{{range $i, $d := .Developers}}{{if $i}}, {{end}}{{$d.Name}}{{end}}{{else}}Noch keine.{{end}}</p>
+  <p class="hint">Entwickler sehen die Sicherheitsmeldungen dieser Software, können Meldungen bearbeiten und erhalten auf Wunsch E-Mails zu neuen Meldungen. Zuordnen können Administratoren in der Verwaltung.</p>
+</section>
+</div>
+{{end}}{{end}}

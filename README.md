@@ -10,10 +10,17 @@ Webbasierte Melde-Anwendung in Go für **Bugs** und **Feature-Wünsche** – öf
 
 - Meldungen pro Software: Bug, Feature, Sicherheitslücke/Exploit, optionale Versionsangabe
 - Upvotes (eine Stimme pro Benutzer, umschaltbar), Sortierung *Beliebt* / *Meiste Stimmen* / *Neueste*
-- Filter nach Software, Art, Status, Volltextsuche, „Nur meine“
-- Kommentare mit Anhängen, automatische Verlaufseinträge bei Status-/Art-Änderungen
-- **Entwickler pro Software**: dürfen Status/Art ändern, Meldungen vertraulich machen oder veröffentlichen, löschen
-- Anmeldung über **lokale Konten** und/oder **OpenID Connect** (PKCE, Nonce; Admin-Rechte optional über eine IdP-Gruppe)
+- Filter nach Software, Art, Status, Label, Volltextsuche, „Nur meine“, „Mir zugewiesen“
+- **Markdown** in Meldungen und Antworten (Codeblöcke für Logs und Stacktraces, Listen, Tabellen) mit Vorschau
+- Antworten mit Anhängen; Änderungen landen im eingeklappten Änderungsverlauf
+- **Meldung folgen** und **E-Mail-Benachrichtigungen** (neue Meldungen, Antworten, Änderungen, Zuweisungen)
+- **Bearbeiten und Löschen** eigener Meldungen und Antworten, Moderation durch Entwickler, einzelne Anhänge entfernen
+- **Duplikate verknüpfen**: Stimmen und Folgende wandern zum Original, beide Seiten verweisen aufeinander
+- **Labels** pro Software, **Zuständigkeit** und **„Behoben in Version“**
+- Duplikatsfinder beim Melden: schlägt passende Meldungen der gewählten Software zum Unterstützen vor
+- **Entwickler pro Software**: dürfen Meldungen bearbeiten, zuweisen, labeln, vertraulich machen oder veröffentlichen, löschen
+- Betrieb: **Sicherung/Wiederherstellung** (auch automatisch), **ClamAV-Virenscan** der Anhänge, Begrenzung von Beiträgen pro Stunde
+- Anmeldung über **lokale Konten**, **LDAP/Active Directory** und/oder **OpenID Connect** (PKCE, Nonce), frei kombinierbar; Admin-Rechte optional über eine Verzeichnis- bzw. IdP-Gruppe
 - Verwaltung: Software anlegen, Entwickler zuordnen, Benutzer zu Admins machen oder sperren
 - Eigenständige Oberfläche mit selbst gehosteten Schriften (Barlow, SIL OFL), Hell- und Dunkelmodus, mobiltauglich
 - SQLite (reines Go, kein CGO), einzelnes Binary mit eingebetteten Templates, Docker-Image auf distroless-Basis
@@ -98,6 +105,123 @@ meldungen.example.de {
 
 Wenn nur SSO gewünscht ist: `MS_LOCAL_LOGIN=false`. Admins kommen dann über `MS_OIDC_ADMIN_GROUP`.
 
+### LDAP / Active Directory
+
+LDAP ist aktiv, sobald `MS_LDAP_URL` und `MS_LDAP_BASE_DN` gesetzt sind. Die Anmeldung erfolgt über das normale Formular mit Benutzername und Passwort.
+
+| Variable | Standard | Bedeutung |
+|---|---|---|
+| `MS_LDAP_URL` | – | `ldaps://dc01.firma.local:636` oder `ldap://…:389` |
+| `MS_LDAP_STARTTLS` | `false` | StartTLS bei `ldap://` (empfohlen statt Klartext) |
+| `MS_LDAP_CA_FILE` | – | CA-Zertifikat (PEM) der Domäne, falls nicht im System hinterlegt |
+| `MS_LDAP_BIND_DN` | – | Dienstkonto für die Suche, z. B. `CN=svc-meldestelle,OU=Dienste,DC=firma,DC=local` |
+| `MS_LDAP_BIND_PASSWORD` / `_FILE` | – | Passwort des Dienstkontos |
+| `MS_LDAP_BASE_DN` | – | Suchbasis, z. B. `DC=firma,DC=local` |
+| `MS_LDAP_USER_FILTER` | sucht `sAMAccountName`, `userPrincipalName` oder `uid` | Filter mit Platzhalter `{username}` (wird maskiert) |
+| `MS_LDAP_ATTR_USERNAME` | `sAMAccountName` | Attribut für den Benutzernamen (OpenLDAP: `uid`) |
+| `MS_LDAP_ATTR_EMAIL` | `mail` | E-Mail, wird bei jeder Anmeldung abgeglichen |
+| `MS_LDAP_ATTR_NAME` | `displayName` | Anzeigename beim ersten Login (OpenLDAP: `cn`) |
+| `MS_LDAP_ATTR_ID` | automatisch | Stabile ID; automatisch `objectGUID` (AD), `entryUUID` (OpenLDAP), `ipaUniqueID` (FreeIPA) |
+| `MS_LDAP_REQUIRED_GROUP` | – | Nur Mitglieder dieser Gruppe (DN) dürfen sich anmelden |
+| `MS_LDAP_ADMIN_GROUP` | – | Mitglieder (DN) werden Administratoren, bei jeder Anmeldung synchronisiert |
+| `MS_LDAP_NESTED_GROUPS` | `false` | Verschachtelte AD-Gruppen auflösen (`LDAP_MATCHING_RULE_IN_CHAIN`) |
+| `MS_LDAP_HINT` | „Du kannst dich mit deinem Domänenkonto anmelden.“ | Hinweis im Anmeldeformular (leer = aus) |
+| `MS_LDAP_TIMEOUT_SECONDS` | `10` | Zeitlimit für Verbindung und Abfragen |
+| `MS_LDAP_INSECURE_SKIP_VERIFY` | `false` | Zertifikatsprüfung abschalten – nur zum Testen |
+
+Beispiel für Active Directory:
+
+```env
+MS_LDAP_URL=ldaps://dc01.firma.local
+MS_LDAP_CA_FILE=/run/secrets/firma-root-ca.pem
+MS_LDAP_BIND_DN=CN=svc-meldestelle,OU=Dienstkonten,DC=firma,DC=local
+MS_LDAP_BIND_PASSWORD_FILE=/run/secrets/ldap_bind
+MS_LDAP_BASE_DN=DC=firma,DC=local
+MS_LDAP_REQUIRED_GROUP=CN=GG-Meldestelle-Nutzer,OU=Gruppen,DC=firma,DC=local
+MS_LDAP_ADMIN_GROUP=CN=GG-Meldestelle-Admins,OU=Gruppen,DC=firma,DC=local
+MS_LDAP_NESTED_GROUPS=true
+MS_ALLOW_REGISTRATION=false
+```
+
+Gesperrte und deaktivierte AD-Konten scheitern bereits am Bind. Das Dienstkonto braucht nur Leserechte.
+
+Konfiguration prüfen, ohne den Server zu starten:
+
+```bash
+meldestelle ldap-test -user jdoe
+```
+
+Hinweise:
+
+- Konten werden über die stabile Verzeichnis-ID verknüpft, nicht über den Namen. Umbenennungen und OU-Wechsel (z. B. Abteilungswechsel) behalten das Konto.
+- Bei der Anmeldung wird zuerst ein lokales Konto mit diesem Namen und Passwort geprüft, danach LDAP. Ein lokal registriertes Konto kann ein Verzeichniskonto gleichen Namens nicht übernehmen. Belegt ein lokales Konto den Namen schon, bekommt das Verzeichniskonto einen Zusatz (`jdoe-2`). Mit LDAP daher am besten `MS_ALLOW_REGISTRATION=false` setzen.
+- Mit `MS_LOCAL_LOGIN=false` sind nur noch Verzeichnis- und SSO-Konten möglich. Administratoren dann über `MS_LDAP_ADMIN_GROUP` bestimmen.
+
+### E-Mail-Benachrichtigungen
+
+Aktiv, sobald `MS_SMTP_HOST` und `MS_SMTP_FROM` gesetzt sind. E-Mails laufen über eine Warteschlange in der Datenbank und werden bei Fehlern bis zu sieben Mal wiederholt (1 Min. bis 12 Std.). Ein ausgefallener Mailserver blockiert also nie die Anwendung. Status und Testmail: *Verwaltung → Betrieb*.
+
+| Variable | Standard | Bedeutung |
+|---|---|---|
+| `MS_SMTP_HOST` | – | Mailserver |
+| `MS_SMTP_PORT` | `587` | Port |
+| `MS_SMTP_TLS` | `starttls` | `starttls`, `tls` (implizit, Port 465) oder `none` |
+| `MS_SMTP_USER` | – | Benutzer (leer = ohne Anmeldung, z. B. internes Relay) |
+| `MS_SMTP_PASSWORD` / `_FILE` | – | Passwort |
+| `MS_SMTP_FROM` | – | Absender, z. B. `Meldestelle <meldestelle@firma.de>` |
+
+Wer was bekommt (jeweils im Konto abbestellbar):
+
+- **Entwickler** einer Software: neue Meldungen dieser Software
+- **Folgende** einer Meldung: Antworten und Änderungen. Meldende und Antwortende folgen automatisch, alle anderen per „Folgen“-Knopf.
+- **Zuständige**: wenn ihnen eine Meldung zugewiesen wird
+- Niemand bekommt E-Mails zu eigenen Aktionen.
+
+Zu **vertraulichen Meldungen** enthält eine E-Mail nur Software, Nummer und Link, nie Titel oder Inhalt. Wird eine Meldung vertraulich, erhalten Folgende ohne Sichtrecht keine E-Mails mehr. E-Mails einer Meldung tragen dieselbe `References`-Kennung und erscheinen im Mailprogramm als ein Thread.
+
+### Virenscan (ClamAV)
+
+```env
+MS_CLAMAV_ADDR=tcp://clamav:3310      # oder unix:///run/clamav/clamd.ctl
+MS_CLAMAV_REQUIRED=true               # Uploads ablehnen, wenn clamd nicht erreichbar ist
+```
+
+Anhänge öffentlicher Meldungen, die ClamAV erkennt, werden abgelehnt. In **vertraulichen Sicherheitsmeldungen** sind Exploits und Proof-of-Concepts legitim: Sie werden angenommen, aber als Schadsoftware markiert, nie inline angezeigt und erst nach einer Rückfrage heruntergeladen.
+
+### Begrenzung
+
+| Variable | Standard | Bedeutung |
+|---|---|---|
+| `MS_LIMIT_REPORTS_PER_HOUR` | `10` | Meldungen pro Konto und Stunde |
+| `MS_LIMIT_REPLIES_PER_HOUR` | `60` | Antworten pro Konto und Stunde |
+
+Entwickler und Administratoren sind ausgenommen. `0` schaltet die jeweilige Begrenzung ab.
+
+### Sicherung und Wiederherstellung
+
+```bash
+meldestelle backup -out meldestelle-2026-11-08.tar.gz   # auch im laufenden Betrieb (VACUUM INTO)
+meldestelle restore -in meldestelle-2026-11-08.tar.gz   # Server vorher stoppen; -force überschreibt vorhandene Daten
+```
+
+Automatische Sicherungen:
+
+| Variable | Standard | Bedeutung |
+|---|---|---|
+| `MS_BACKUP_DIR` | – | Zielverzeichnis (leer = aus) |
+| `MS_BACKUP_INTERVAL_HOURS` | `24` | Abstand zwischen Sicherungen |
+| `MS_BACKUP_KEEP` | `14` | Anzahl aufbewahrter Sicherungen |
+
+Die Wiederherstellung prüft die Datenbank vor dem Austausch (`integrity_check`) und nimmt nur bekannte Dateinamen aus dem Archiv an.
+
+## Arbeiten mit Meldungen
+
+- **Markdown**: `**fett**`, `` `code` ``, Codeblöcke mit ```` ``` ````, Listen, Tabellen, Links. Roh-HTML wird nicht übernommen, Links öffnen mit `rel="nofollow noopener"`, externe Bilder blockiert die CSP.
+- **Bearbeiten**: Meldende und Entwickler können Titel, Beschreibung, Version und Anhänge ändern. Antworten bearbeitet nur, wer sie geschrieben hat. Änderungen sind im Verlauf sichtbar („bearbeitet“).
+- **Löschen**: Antworten löschen ihre Verfasser selbst, Entwickler können sie als Moderation entfernen (bleibt als Hinweis sichtbar). Meldende können ihre Meldung zurückziehen, solange sich niemand sonst beteiligt hat, sonst nur Entwickler.
+- **Duplikate**: Status „Duplikat“ wählen und die Original-Nummer angeben (Vorschläge erscheinen automatisch). Stimmen und Folgende werden übertragen, Ketten werden auf das Original aufgelöst, und auf Duplikate kann nicht mehr abgestimmt werden.
+- **Labels** legen Entwickler unter *Software → Einstellungen* an (acht feste Farben mit gutem Kontrast in hell und dunkel).
+
 ## Sicherheit
 
 - Sitzungs-Cookies `HttpOnly`, `SameSite=Lax`, nur gehashte Tokens in der Datenbank
@@ -111,6 +235,9 @@ Wenn nur SSO gewünscht ist: `MS_LOCAL_LOGIN=false`. Admins kommen dann über `M
 ```bash
 go test ./...
 ./meldestelle version
+
+# optional: LDAP-Integrationstest gegen einen echten Server (siehe ldap_test.go)
+MS_TEST_LDAP_URL=ldap://localhost:389 MS_TEST_LDAP_BASE_DN=… go test -run Integration ./...
 ```
 
 ## CI und Releases
@@ -143,6 +270,6 @@ Nach dem ersten Image-Push ist das Paket in GHCR privat. Unter *Packages → mel
 
 ## Ideen für später
 
-- E-Mail-Benachrichtigungen an Entwickler bei neuen Sicherheitsmeldungen
-- Markdown-Rendering, Duplikat-Verknüpfung, Labels
+- GLPI-Übergabe bestätigter Meldungen
+- `security.txt`, Veröffentlichungsfristen und CVE-Feld für Sicherheitsmeldungen
 - Entwickler dürfen weitere Entwickler ihrer Software ernennen

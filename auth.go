@@ -36,7 +36,7 @@ func (a *App) handleLoginForm(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
-	if !a.cfg.AllowLocalLogin {
+	if !a.cfg.AllowLocalLogin && a.dir == nil {
 		a.notFound(w, r)
 		return
 	}
@@ -53,20 +53,27 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var id int64
-	var hash string
-	var disabled bool
-	err := a.db.QueryRow(`SELECT id, password_hash, disabled FROM users WHERE username = ?`, username).Scan(&id, &hash, &disabled)
-	ok := false
-	if err == nil && hash != "" {
-		ok = bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
-	} else {
-		bcrypt.CompareHashAndPassword(a.dummyHash, []byte(password)) // gleiche Laufzeit, keine Benutzer-Enumeration
-	}
-	if !ok || disabled {
+	id, err := a.authenticate(r.Context(), username, password)
+	switch {
+	case err == nil:
+	case errors.Is(err, errBadCredentials):
 		a.limiter.fail(ipKey)
 		a.limiter.fail(userKey)
 		fail(http.StatusUnauthorized, "Benutzername oder Passwort ist falsch.")
+		return
+	case errors.Is(err, errNotPermitted):
+		a.limiter.fail(ipKey)
+		fail(http.StatusForbidden, "Dein Konto ist für diese Anwendung nicht freigeschaltet. Wende dich an die IT.")
+		return
+	case errors.Is(err, errUserDisabled):
+		fail(http.StatusForbidden, "Dein Konto ist gesperrt.")
+		return
+	case errors.Is(err, errDirectoryDown):
+		slog.Error("LDAP", "err", err)
+		fail(http.StatusServiceUnavailable, "Der Verzeichnisdienst ist gerade nicht erreichbar. Bitte versuche es gleich noch einmal.")
+		return
+	default:
+		a.serverError(w, r, err)
 		return
 	}
 	a.limiter.reset(userKey)
@@ -75,6 +82,40 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	redirect(w, r, next)
+}
+
+// authenticate prüft zuerst ein lokales Konto mit Passwort und danach – falls konfiguriert – LDAP.
+// LDAP-Konten werden über ihre Verzeichnis-ID verknüpft, nie über den Benutzernamen: Ein lokal
+// registriertes Konto „jdoe“ kann also nicht das Verzeichniskonto „jdoe“ übernehmen und umgekehrt.
+func (a *App) authenticate(ctx context.Context, username, password string) (int64, error) {
+	if a.cfg.AllowLocalLogin {
+		var id int64
+		var hash string
+		var disabled bool
+		err := a.db.QueryRow(`SELECT id, password_hash, disabled FROM users WHERE username = ? AND password_hash <> ''`, username).
+			Scan(&id, &hash, &disabled)
+		switch {
+		case err == nil:
+			if bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil {
+				if disabled {
+					return 0, errUserDisabled
+				}
+				return id, nil
+			}
+		case errors.Is(err, sql.ErrNoRows):
+			bcrypt.CompareHashAndPassword(a.dummyHash, []byte(password)) // gleiche Laufzeit, keine Benutzer-Enumeration
+		default:
+			return 0, err
+		}
+	}
+	if a.dir == nil {
+		return 0, errBadCredentials
+	}
+	ident, err := a.dir.Authenticate(ctx, username, password)
+	if err != nil {
+		return 0, err
+	}
+	return a.upsertLDAPUser(ident)
 }
 
 func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -147,13 +188,30 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 // ---------- Konto ----------
 
+type accountPage struct {
+	NotifyNew, NotifyFollow, NotifyAssign bool
+	IsDev                                 bool
+	MailEnabled                           bool
+}
+
 func (a *App) handleAccount(w http.ResponseWriter, r *http.Request) {
-	a.render(w, r, http.StatusOK, "account.html", "Mein Konto", nil)
+	u := currentUser(r)
+	p := accountPage{IsDev: u.IsAdmin || a.isAnyDeveloper(u.ID), MailEnabled: a.mailer != nil}
+	p.NotifyNew, p.NotifyFollow, p.NotifyAssign = a.notifyPrefs(u.ID)
+	a.render(w, r, http.StatusOK, "account.html", "Mein Konto", p)
 }
 
 func (a *App) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
 	switch r.PostFormValue("aktion") {
+	case "benachrichtigungen":
+		b := func(k string) bool { return r.PostFormValue(k) == "1" }
+		if _, err := a.db.Exec(`UPDATE users SET notify_new = ?, notify_follow = ?, notify_assign = ? WHERE id = ?`,
+			b("neu"), b("folgen"), b("zugewiesen"), u.ID); err != nil {
+			a.serverError(w, r, err)
+			return
+		}
+		a.flash(w, "ok", "Benachrichtigungen gespeichert.")
 	case "profil":
 		name := cleanLine(r.PostFormValue("anzeigename"), 60)
 		email := cleanLine(r.PostFormValue("email"), 200)
@@ -161,8 +219,8 @@ func (a *App) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 			a.flash(w, "error", "Die E-Mail-Adresse ist ungültig.")
 			break
 		}
-		if u.IsOIDC {
-			email = u.Email // wird vom Identity Provider verwaltet
+		if u.IsOIDC || u.IsLDAP {
+			email = u.Email // wird vom Identity Provider bzw. Verzeichnisdienst verwaltet
 		}
 		if _, err := a.db.Exec(`UPDATE users SET display_name = ?, email = ? WHERE id = ?`, name, email, u.ID); err != nil {
 			a.serverError(w, r, err)
@@ -171,7 +229,7 @@ func (a *App) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 		a.flash(w, "ok", "Profil gespeichert.")
 	case "passwort":
 		if !u.HasPassword {
-			a.flash(w, "error", "Dein Konto nutzt Single Sign-On und hat kein lokales Passwort.")
+			a.flash(w, "error", "Dein Konto hat kein lokales Passwort. Ändere es dort, wo es verwaltet wird (Single Sign-On oder Verzeichnisdienst).")
 			break
 		}
 		var hash string

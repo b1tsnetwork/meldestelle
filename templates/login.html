@@ -5,9 +5,10 @@
   {{if .Error}}<div class="notice notice-error" role="alert">{{.Error}}</div>{{end}}
   {{if $.OIDC}}
     <a class="btn btn-primary btn-block" href="/auth/oidc/login?next={{.Next}}">{{$.OIDCLabel}}</a>
-    {{if $.LocalLogin}}<p class="or">oder mit Benutzername</p>{{end}}
+    {{if or $.LocalLogin $.LDAP}}<p class="or">oder mit Benutzername</p>{{end}}
   {{end}}
-  {{if $.LocalLogin}}
+  {{if or $.LocalLogin $.LDAP}}
+  {{if and $.LDAP $.LDAPHint}}<p class="field-help login-hint">{{$.LDAPHint}}</p>{{end}}
   <form method="post" action="/login" class="stack">
     <input type="hidden" name="csrf" value="{{$.CSRF}}">
     <input type="hidden" name="next" value="{{.Next}}">

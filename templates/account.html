@@ -2,7 +2,7 @@
 <div class="sheet-wrap">
 <header class="sheet-head">
   <h1>Mein Konto</h1>
-  <p class="lede">Angemeldet als <strong>{{.Username}}</strong>, {{if .IsOIDC}}über Single Sign-On{{else}}mit lokalem Konto{{end}}{{if .IsAdmin}}, Administrator{{end}}. <a href="/?meine=1">Meine Meldungen ansehen</a></p>
+  <p class="lede">Angemeldet als <strong>{{.Username}}</strong>, {{if .IsOIDC}}über Single Sign-On{{else if .IsLDAP}}mit deinem Verzeichniskonto{{else}}mit lokalem Konto{{end}}{{if .IsAdmin}}, Administrator{{end}}. <a href="/?meine=1">Meine Meldungen ansehen</a></p>
 </header>
 
 <form class="sheet" method="post" action="/konto">
@@ -11,10 +11,30 @@
   <input type="hidden" name="aktion" value="profil">
   <div class="field-row">
     <div class="field"><label for="a-name">Anzeigename</label><input id="a-name" name="anzeigename" value="{{.DisplayName}}" maxlength="60" placeholder="{{.Username}}"></div>
-    <div class="field"><label for="a-mail">E-Mail</label><input id="a-mail" type="email" name="email" value="{{.Email}}" {{if .IsOIDC}}readonly aria-describedby="h-mail"{{end}}>
-      {{if .IsOIDC}}<p class="field-help" id="h-mail">Wird vom Identity Provider gepflegt.</p>{{end}}</div>
+    <div class="field"><label for="a-mail">E-Mail</label><input id="a-mail" type="email" name="email" value="{{.Email}}" {{if or .IsOIDC .IsLDAP}}readonly aria-describedby="h-mail"{{end}}>
+      {{if .IsOIDC}}<p class="field-help" id="h-mail">Wird vom Identity Provider gepflegt.</p>{{else if .IsLDAP}}<p class="field-help" id="h-mail">Wird aus dem Verzeichnisdienst übernommen.</p>{{end}}</div>
   </div>
   <div class="sheet-actions"><button class="btn btn-primary">Profil speichern</button></div>
+</form>
+
+<form class="sheet" method="post" action="/konto">
+  <h2>E-Mail-Benachrichtigungen</h2>
+  <input type="hidden" name="csrf" value="{{$.CSRF}}">
+  <input type="hidden" name="aktion" value="benachrichtigungen">
+  {{if not $.Data.MailEnabled}}<p class="notice">Der E-Mail-Versand ist auf diesem Server noch nicht eingerichtet. Deine Einstellungen gelten, sobald er aktiv ist.</p>
+  {{else if not .Email}}<p class="notice notice-error">Hinterlege oben eine E-Mail-Adresse, um Benachrichtigungen zu erhalten.</p>{{end}}
+  <div class="checks">
+    <label class="toggle"><input type="checkbox" name="folgen" value="1"{{if $.Data.NotifyFollow}} checked{{end}}><span>Antworten und Änderungen bei Meldungen, denen ich folge</span></label>
+    <p class="field-help">Du folgst automatisch deinen eigenen Meldungen und allen, auf die du antwortest.</p>
+    {{if $.Data.IsDev}}
+    <label class="toggle"><input type="checkbox" name="neu" value="1"{{if $.Data.NotifyNew}} checked{{end}}><span>Neue Meldungen zu meiner Software</span></label>
+    <label class="toggle"><input type="checkbox" name="zugewiesen" value="1"{{if $.Data.NotifyAssign}} checked{{end}}><span>Wenn mir eine Meldung zugewiesen wird</span></label>
+    {{else}}
+    <input type="hidden" name="neu" value="{{if $.Data.NotifyNew}}1{{end}}"><input type="hidden" name="zugewiesen" value="{{if $.Data.NotifyAssign}}1{{end}}">
+    {{end}}
+  </div>
+  <p class="field-help">Zu vertraulichen Meldungen enthalten E-Mails nur einen Link, nie Titel oder Inhalt.</p>
+  <div class="sheet-actions"><button class="btn btn-primary">Benachrichtigungen speichern</button></div>
 </form>
 
 {{if .HasPassword}}

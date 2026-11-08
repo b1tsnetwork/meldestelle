@@ -122,6 +122,72 @@ CREATE TABLE attachments (
 );
 CREATE INDEX attachments_report ON attachments (report_id);
 `,
+	// 2: LDAP-Konten, verknüpft über eine unveränderliche Verzeichnis-ID
+	`
+ALTER TABLE users ADD COLUMN ldap_id TEXT NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX users_ldap ON users (ldap_id) WHERE ldap_id <> '';
+`,
+	// 3: Benachrichtigungen, Folgen, Labels, Zuständigkeit, Duplikate, Bearbeiten/Moderation, Virenscan
+	`
+ALTER TABLE reports ADD COLUMN duplicate_of INTEGER REFERENCES reports (id) ON DELETE SET NULL;
+ALTER TABLE reports ADD COLUMN assignee_id INTEGER REFERENCES users (id) ON DELETE SET NULL;
+ALTER TABLE reports ADD COLUMN fixed_in TEXT NOT NULL DEFAULT '';
+ALTER TABLE reports ADD COLUMN edited_at INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX reports_duplicate ON reports (duplicate_of) WHERE duplicate_of IS NOT NULL;
+CREATE INDEX reports_assignee ON reports (assignee_id) WHERE assignee_id IS NOT NULL;
+
+ALTER TABLE comments ADD COLUMN edited_at INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE comments ADD COLUMN deleted_at INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE comments ADD COLUMN deleted_by INTEGER REFERENCES users (id) ON DELETE SET NULL;
+
+ALTER TABLE attachments ADD COLUMN scan TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE users ADD COLUMN notify_new INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE users ADD COLUMN notify_follow INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE users ADD COLUMN notify_assign INTEGER NOT NULL DEFAULT 1;
+
+CREATE TABLE labels (
+	id          INTEGER PRIMARY KEY,
+	software_id INTEGER NOT NULL REFERENCES software (id) ON DELETE CASCADE,
+	name        TEXT    NOT NULL,
+	color       INTEGER NOT NULL DEFAULT 1,
+	UNIQUE (software_id, name COLLATE NOCASE)
+);
+
+CREATE TABLE report_labels (
+	report_id INTEGER NOT NULL REFERENCES reports (id) ON DELETE CASCADE,
+	label_id  INTEGER NOT NULL REFERENCES labels (id) ON DELETE CASCADE,
+	PRIMARY KEY (report_id, label_id)
+);
+CREATE INDEX report_labels_label ON report_labels (label_id);
+
+CREATE TABLE follows (
+	report_id  INTEGER NOT NULL REFERENCES reports (id) ON DELETE CASCADE,
+	user_id    INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+	created_at INTEGER NOT NULL,
+	PRIMARY KEY (report_id, user_id)
+);
+CREATE INDEX follows_user ON follows (user_id);
+
+-- Bestehende Meldungen: Autoren und Antwortende folgen automatisch
+INSERT OR IGNORE INTO follows (report_id, user_id, created_at) SELECT id, author_id, created_at FROM reports;
+INSERT OR IGNORE INTO follows (report_id, user_id, created_at)
+	SELECT report_id, author_id, MIN(created_at) FROM comments WHERE is_system = 0 GROUP BY report_id, author_id;
+
+CREATE TABLE outbox (
+	id         INTEGER PRIMARY KEY,
+	recipient  TEXT    NOT NULL,
+	subject    TEXT    NOT NULL,
+	body       TEXT    NOT NULL,
+	thread     TEXT    NOT NULL DEFAULT '',
+	attempts   INTEGER NOT NULL DEFAULT 0,
+	next_try   INTEGER NOT NULL,
+	last_error TEXT    NOT NULL DEFAULT '',
+	created_at INTEGER NOT NULL,
+	sent_at    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX outbox_pending ON outbox (sent_at, next_try);
+`,
 }
 
 func migrate(db *sql.DB) error {

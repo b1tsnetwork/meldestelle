@@ -1,16 +1,22 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 )
 
 type adminPage struct {
-	Softwares []Software
-	Users     []User
-	Query     string
+	Softwares  []Software
+	Users      []User
+	Query      string
+	Mail       mailStats
+	ClamAV     string // "" = nicht konfiguriert
+	BackupDir  string
+	LastBackup int64
 }
 
 func (a *App) handleAdmin(w http.ResponseWriter, r *http.Request) {
@@ -25,7 +31,22 @@ func (a *App) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		a.serverError(w, r, err)
 		return
 	}
-	a.render(w, r, http.StatusOK, "admin.html", "Verwaltung", adminPage{Softwares: sw, Users: users, Query: q})
+	p := adminPage{Softwares: sw, Users: users, Query: q, Mail: a.mailStatus(), BackupDir: a.cfg.Backup.Dir}
+	if a.scanner != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		if err := a.scanner.Ping(ctx); err != nil {
+			p.ClamAV = "nicht erreichbar: " + cleanLine(err.Error(), 200)
+		} else {
+			p.ClamAV = "aktiv"
+		}
+		cancel()
+	}
+	if p.BackupDir != "" {
+		if t := lastBackup(p.BackupDir); !t.IsZero() {
+			p.LastBackup = t.Unix()
+		}
+	}
+	a.render(w, r, http.StatusOK, "admin.html", "Verwaltung", p)
 }
 
 func (a *App) handleSoftwareCreate(w http.ResponseWriter, r *http.Request) {

@@ -24,6 +24,7 @@
       <div class="field grow"><label for="e-desc-{{.ID}}">Beschreibung</label><input id="e-desc-{{.ID}}" name="beschreibung" value="{{.Description}}" maxlength="2000"></div>
       <button class="btn">Speichern</button>
       <a class="btn-text" href="/s/{{.Slug}}">Meldungen ansehen</a>
+      <a class="btn-text" href="/s/{{.Slug}}/einstellungen">Labels</a>
     </form>
     <div class="dev-row">
       <span class="dev-label">Entwickler</span>
@@ -47,6 +48,40 @@
   {{end}}
 </section>
 
+<section class="admin-block" id="betrieb" aria-labelledby="h-ops">
+  <h2 id="h-ops">Betrieb</h2>
+  <div class="ops">
+    <div class="ops-item">
+      <h3>E-Mail-Versand</h3>
+      {{if .Mail.Enabled}}
+        <p><span class="status st-fixed"><i aria-hidden="true"></i>Aktiv</span></p>
+        <p class="hint">{{.Mail.Pending}} in der Warteschlange{{if .Mail.Failed}}, <strong class="danger-text">{{.Mail.Failed}} endgültig fehlgeschlagen</strong>{{end}}</p>
+        {{if .Mail.LastError}}<p class="hint">Letzter Fehler: {{.Mail.LastError}}</p>{{end}}
+        <form method="post" action="/admin/testmail"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="btn btn-small">Testmail an mich senden</button></form>
+      {{else}}
+        <p><span class="status st-wontfix"><i aria-hidden="true"></i>Nicht eingerichtet</span></p>
+        <p class="hint">MS_SMTP_HOST und MS_SMTP_FROM setzen, siehe README.</p>
+      {{end}}
+    </div>
+    <div class="ops-item">
+      <h3>Virenscan</h3>
+      {{if eq .ClamAV "aktiv"}}<p><span class="status st-fixed"><i aria-hidden="true"></i>ClamAV aktiv</span></p>
+      {{else if .ClamAV}}<p><span class="status st-open"><i aria-hidden="true"></i>ClamAV {{.ClamAV}}</span></p>
+      {{else}}<p><span class="status st-wontfix"><i aria-hidden="true"></i>Nicht eingerichtet</span></p><p class="hint">MS_CLAMAV_ADDR setzen, z. B. tcp://clamav:3310.</p>{{end}}
+    </div>
+    <div class="ops-item">
+      <h3>Sicherung</h3>
+      {{if .BackupDir}}
+        <p><span class="status st-fixed"><i aria-hidden="true"></i>Automatisch</span></p>
+        <p class="hint">{{if .LastBackup}}Letzte Sicherung {{ago .LastBackup}}{{else}}Noch keine Sicherung erstellt{{end}}, Ziel {{.BackupDir}}</p>
+      {{else}}
+        <p><span class="status st-wontfix"><i aria-hidden="true"></i>Nur manuell</span></p>
+        <p class="hint"><code>meldestelle backup</code> oder MS_BACKUP_DIR für automatische Sicherungen setzen.</p>
+      {{end}}
+    </div>
+  </div>
+</section>
+
 <section class="admin-block" id="benutzer" aria-labelledby="h-users">
   <div class="admin-block-head">
     <h2 id="h-users">Benutzer</h2>
@@ -63,7 +98,7 @@
       <tr{{if .Disabled}} class="is-disabled"{{end}}>
         <td><strong>{{.Username}}</strong>{{if .DisplayName}}<span class="sub">{{.DisplayName}}</span>{{end}}</td>
         <td>{{.Email}}</td>
-        <td>{{if .IsOIDC}}Single Sign-On{{else}}Lokal{{end}}</td>
+        <td>{{if .IsOIDC}}Single Sign-On{{else if .IsLDAP}}LDAP{{else}}Lokal{{end}}</td>
         <td>{{if .IsAdmin}}<span class="role role-dev">Administrator</span>{{end}}{{if .Disabled}}<span class="role role-off">Gesperrt</span>{{end}}</td>
         <td>{{date .CreatedAt}}</td>
         <td class="actions">

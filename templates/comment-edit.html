@@ -1,0 +1,18 @@
+{{define "content"}}{{with .Data}}{{$r := .Report}}
+<div class="sheet-wrap">
+<nav class="crumbs" aria-label="Pfad"><a href="/s/{{$r.SoftwareSlug}}">{{$r.SoftwareName}}</a><span aria-hidden="true">/</span><a href="/r/{{$r.ID}}">#{{$r.ID}} {{$r.Title}}</a><span aria-hidden="true">/</span><span>Antwort bearbeiten</span></nav>
+<header class="sheet-head"><h1>Antwort bearbeiten</h1></header>
+{{if .Error}}<div class="notice notice-error" role="alert">{{.Error}}</div>{{end}}
+<form class="sheet" method="post" action="/k/{{.Comment.ID}}/bearbeiten">
+  <input type="hidden" name="csrf" value="{{$.CSRF}}">
+  <div class="field">
+    <label for="c-text">Antwort</label>
+    <textarea id="c-text" name="text" data-md rows="10" maxlength="20000">{{.Text}}</textarea>
+  </div>
+  <div class="sheet-actions">
+    <a class="btn-text" href="/r/{{$r.ID}}#k{{.Comment.ID}}">Abbrechen</a>
+    <button class="btn btn-primary">Antwort speichern</button>
+  </div>
+</form>
+</div>
+{{end}}{{end}}

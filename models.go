@@ -18,6 +18,7 @@ type User struct {
 	DisplayName string
 	HasPassword bool
 	IsOIDC      bool
+	IsLDAP      bool
 	IsAdmin     bool
 	Disabled    bool
 	CreatedAt   int64
@@ -62,7 +63,27 @@ type Report struct {
 	UpdatedAt    int64
 	Comments     int
 	Voted        bool
+	DuplicateOf  int64
+	AssigneeID   int64
+	AssigneeName string
+	FixedIn      string
+	EditedAt     int64
+	Labels       []Label
 	FirstDone    bool // erste erledigte Meldung in einer Liste (für den Trenner)
+}
+
+type Label struct {
+	ID         int64
+	SoftwareID int64
+	Name       string
+	Color      int
+	Uses       int
+}
+
+// labelColors sind feste Farbtöne (CSS-Klassen lc-1 … lc-8), damit Kontrast in hell und dunkel stimmt.
+var labelColors = []option{
+	{"1", "Blau"}, {"2", "Grün"}, {"3", "Gelb"}, {"4", "Orange"},
+	{"5", "Rot"}, {"6", "Violett"}, {"7", "Türkis"}, {"8", "Grau"},
 }
 
 // doneStatuses gelten als erledigt: kompakt, gedimmt und in Listen ans Ende sortiert.
@@ -79,14 +100,24 @@ type Comment struct {
 	Body        string
 	IsSystem    bool
 	CreatedAt   int64
+	EditedAt    int64
+	DeletedAt   int64
+	DeletedBy   int64
 	AuthorIsDev bool
+	CanEdit     bool
+	CanDelete   bool
 	Attachments []Attachment
 }
+
+func (c Comment) Deleted() bool { return c.DeletedAt != 0 }
 
 type Attachment struct {
 	ID          int64
 	ReportID    int64
 	CommentID   sql.NullInt64
+	UploaderID  int64
+	Scan        string // '' = nicht geprüft, "clean" oder "FOUND:<Signatur>"
+	CanRemove   bool
 	Filename    string
 	ContentType string
 	Size        int64
@@ -184,13 +215,13 @@ func cleanLine(s string, max int) string {
 
 // ---------- Benutzer ----------
 
-const userCols = `u.id, u.username, u.email, u.display_name, u.password_hash <> '', u.oidc_subject <> '', u.is_admin, u.disabled, u.created_at`
+const userCols = `u.id, u.username, u.email, u.display_name, u.password_hash <> '', u.oidc_subject <> '', u.ldap_id <> '', u.is_admin, u.disabled, u.created_at`
 
 type scanner interface{ Scan(...any) error }
 
 func scanUser(s scanner) (*User, error) {
 	u := &User{}
-	if err := s.Scan(&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.HasPassword, &u.IsOIDC, &u.IsAdmin, &u.Disabled, &u.CreatedAt); err != nil {
+	if err := s.Scan(&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.HasPassword, &u.IsOIDC, &u.IsLDAP, &u.IsAdmin, &u.Disabled, &u.CreatedAt); err != nil {
 		return nil, err
 	}
 	return u, nil
@@ -376,18 +407,21 @@ func reportSelect(bodyExpr string) string {
 	return `SELECT r.id, r.software_id, s.slug, s.name, r.author_id,
 		COALESCE(NULLIF(u.display_name, ''), u.username),
 		r.kind, r.status, r.title, ` + bodyExpr + `, r.version, r.confidential, r.score, r.created_at, r.updated_at,
-		(SELECT COUNT(*) FROM comments c WHERE c.report_id = r.id AND c.is_system = 0),
-		EXISTS (SELECT 1 FROM votes v WHERE v.report_id = r.id AND v.user_id = ?)
+		(SELECT COUNT(*) FROM comments c WHERE c.report_id = r.id AND c.is_system = 0 AND c.deleted_at = 0),
+		EXISTS (SELECT 1 FROM votes v WHERE v.report_id = r.id AND v.user_id = ?),
+		COALESCE(r.duplicate_of, 0), COALESCE(r.assignee_id, 0),
+		COALESCE(NULLIF(asg.display_name, ''), asg.username, ''), r.fixed_in, r.edited_at
 	FROM reports r
 	JOIN software s ON s.id = r.software_id
-	JOIN users u ON u.id = r.author_id`
+	JOIN users u ON u.id = r.author_id
+	LEFT JOIN users asg ON asg.id = r.assignee_id`
 }
 
 func scanReport(s scanner) (*Report, error) {
 	r := &Report{}
 	err := s.Scan(&r.ID, &r.SoftwareID, &r.SoftwareSlug, &r.SoftwareName, &r.AuthorID, &r.AuthorName,
 		&r.Kind, &r.Status, &r.Title, &r.Body, &r.Version, &r.Confidential, &r.Score, &r.CreatedAt, &r.UpdatedAt,
-		&r.Comments, &r.Voted)
+		&r.Comments, &r.Voted, &r.DuplicateOf, &r.AssigneeID, &r.AssigneeName, &r.FixedIn, &r.EditedAt)
 	return r, err
 }
 
@@ -405,8 +439,8 @@ func (a *App) getReport(id int64, u *User) (*Report, error) {
 
 type listFilter struct {
 	Kind, Status, Query, Sort string
-	Mine                      bool
-	SoftwareID                int64
+	Mine, Assigned            bool
+	SoftwareID, Label         int64
 }
 
 const pageSize = 25
@@ -439,6 +473,14 @@ func (a *App) queryReports(u *User, f listFilter, page int) ([]Report, bool, err
 	if f.Mine && u != nil {
 		where = append(where, `r.author_id = ?`)
 		args = append(args, u.ID)
+	}
+	if f.Assigned && u != nil {
+		where = append(where, `r.assignee_id = ?`)
+		args = append(args, u.ID)
+	}
+	if f.Label != 0 {
+		where = append(where, `EXISTS (SELECT 1 FROM report_labels rl WHERE rl.report_id = r.id AND rl.label_id = ?)`)
+		args = append(args, f.Label)
 	}
 	var order string
 	switch f.Sort {
@@ -482,7 +524,7 @@ func (a *App) queryReports(u *User, f listFilter, page int) ([]Report, bool, err
 }
 
 func (a *App) attachmentsForReport(reportID int64) ([]Attachment, error) {
-	rows, err := a.db.Query(`SELECT id, report_id, comment_id, filename, content_type, size, storage_name, created_at
+	rows, err := a.db.Query(`SELECT id, report_id, comment_id, uploader_id, scan, filename, content_type, size, storage_name, created_at
 		FROM attachments WHERE report_id = ? ORDER BY id`, reportID)
 	if err != nil {
 		return nil, err
@@ -491,7 +533,7 @@ func (a *App) attachmentsForReport(reportID int64) ([]Attachment, error) {
 	var out []Attachment
 	for rows.Next() {
 		var at Attachment
-		if err := rows.Scan(&at.ID, &at.ReportID, &at.CommentID, &at.Filename, &at.ContentType, &at.Size, &at.StorageName, &at.CreatedAt); err != nil {
+		if err := rows.Scan(&at.ID, &at.ReportID, &at.CommentID, &at.UploaderID, &at.Scan, &at.Filename, &at.ContentType, &at.Size, &at.StorageName, &at.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, at)
@@ -501,14 +543,15 @@ func (a *App) attachmentsForReport(reportID int64) ([]Attachment, error) {
 
 func (a *App) attachmentByID(id int64) (*Attachment, error) {
 	at := &Attachment{}
-	err := a.db.QueryRow(`SELECT id, report_id, comment_id, filename, content_type, size, storage_name, created_at
+	err := a.db.QueryRow(`SELECT id, report_id, comment_id, uploader_id, scan, filename, content_type, size, storage_name, created_at
 		FROM attachments WHERE id = ?`, id).
-		Scan(&at.ID, &at.ReportID, &at.CommentID, &at.Filename, &at.ContentType, &at.Size, &at.StorageName, &at.CreatedAt)
+		Scan(&at.ID, &at.ReportID, &at.CommentID, &at.UploaderID, &at.Scan, &at.Filename, &at.ContentType, &at.Size, &at.StorageName, &at.CreatedAt)
 	return at, err
 }
 
 func (a *App) commentsForReport(reportID int64) ([]Comment, error) {
-	rows, err := a.db.Query(`SELECT c.id, c.author_id, COALESCE(NULLIF(u.display_name, ''), u.username), c.body, c.is_system, c.created_at
+	rows, err := a.db.Query(`SELECT c.id, c.author_id, COALESCE(NULLIF(u.display_name, ''), u.username), c.body, c.is_system, c.created_at,
+			c.edited_at, c.deleted_at, COALESCE(c.deleted_by, 0)
 		FROM comments c JOIN users u ON u.id = c.author_id
 		WHERE c.report_id = ? ORDER BY c.created_at, c.id`, reportID)
 	if err != nil {
@@ -518,7 +561,7 @@ func (a *App) commentsForReport(reportID int64) ([]Comment, error) {
 	var out []Comment
 	for rows.Next() {
 		var c Comment
-		if err := rows.Scan(&c.ID, &c.AuthorID, &c.AuthorName, &c.Body, &c.IsSystem, &c.CreatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.AuthorID, &c.AuthorName, &c.Body, &c.IsSystem, &c.CreatedAt, &c.EditedAt, &c.DeletedAt, &c.DeletedBy); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
