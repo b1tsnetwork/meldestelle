@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Das Binary wird auf der Build-Plattform für die Zielplattform cross-kompiliert (reines Go, kein CGO),
 # daher sind Multi-Arch-Images ohne QEMU-Emulation schnell gebaut.
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
